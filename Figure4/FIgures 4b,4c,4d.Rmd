@@ -1,0 +1,220 @@
+---
+title: "DR_Mackay_BC_analysis_publication.Rmd"
+author: "Daniel Rawlinson"
+date: "2024-03-18"
+output: html_document
+---
+#libraries
+```{r}
+library(djvdj)
+library(dplyr)
+library(Seurat)
+library(ggvenn)
+library(patchwork)
+library(magrittr)
+```
+
+#data load
+```{r}
+seu_breast <- readRDS('DR_seu_breast_for_publication.Rds')
+
+Idents(seu_breast) <- 'metaclusters'
+DimPlot(seu_breast, reduction = 'wnn.harmony.umap', label = T, group.by = 'metaclusters')
+
+```
+
+#TCR definition
+```{r}
+seu_breast@meta.data %<>% mutate(combination = paste(comb_TRA, comb_TRB), cdr3s_comb = paste(cdr3_nt_TRA, cdr3_nt_TRB))
+
+```
+
+#TCR expansion
+```{r}
+n_thresh_expansion = 2
+#set threshold here to call a clonotpe 'expanded'
+
+#identify expanded
+seu_breast@meta.data %>% group_by(cdr3s_comb) %>% 
+  summarise(n = n(), alpha = comb_TRA, beta = comb_TRB, cdr3_A = cdr3_nt_TRA, cdr3_B = cdr3_nt_TRB) %>%
+  filter(!is.na(alpha), !is.na(beta), !is.na(cdr3_A), !is.na(cdr3_B), n>=n_thresh_expansion) %>% distinct() %>% arrange(-n) %>%
+  as.data.frame() -> expanded_TCR
+
+#trim to expanded TCR
+expanded_TCR_metadata <- data.frame()
+
+for(i in 1:length(expanded_TCR$cdr3s_comb)) {
+  a = expanded_TCR[i,"alpha"] %>% as.character()
+  b = expanded_TCR[i,"beta"] %>% as.character()
+  cdr3_a = expanded_TCR[i, 'cdr3_A'] %>% as.character()
+  cdr3_b = expanded_TCR[i,'cdr3_B'] %>% as.character()
+  m = seu_breast@meta.data[seu_breast$comb_TRA == a & seu_breast$comb_TRB == b & seu_breast$cdr3_nt_TRA == cdr3_a & seu_breast$cdr3_nt_TRB == cdr3_b,]
+  m = m[!is.na(m$orig.ident),]
+  m$TCR_combination <- expanded_TCR$cdr3s_comb[i]
+  expanded_TCR_metadata = rbind(expanded_TCR_metadata, m) #steadily increasing to capture all the combinations.
+  
+}
+```
+
+#Summary of clonotypes
+```{r}
+#counts per clusters #print to screen
+expanded_TCR_metadata %>% group_by(metaclusters) %>% summarise(num_cells=n(), num_expansions=n_distinct(TCR_combination))
+
+#info per clonotype
+expanded_TCR_metadata %>% group_by(TCR_combination) %>% 
+  add_count(name = 'num_cells') %>% #num of cells
+  group_by(TCR_combination, metaclusters) %>%
+  add_count(name = 'metacluster_count') %>%
+  ungroup() %>% group_by(TCR_combination, tissue) %>% 
+  add_count(name = 'Tissue_count') %>% ungroup() %>% 
+  select(TCR_combination, num_cells, metaclusters, metacluster_count, tissue, Tissue_count, cdr3_nt_TRA, cdr3_nt_TRB, comb_TRA, comb_TRB, cdr3_TRA, cdr3_TRB) %T>% 
+  {select(., TCR_combination, num_cells, Tissue_count, tissue) ->> tissue_columns } %>% 
+  select(-tissue,-Tissue_count) %>% distinct() %>%
+  group_by(TCR_combination) %>%
+  #For representative sequence, get full length alpha beta chains instead of those which have C gene truncated.
+  mutate(comb_TRA = comb_TRA[which(max(comb_TRA) == comb_TRA)[1]], comb_TRB = comb_TRB[which(max(comb_TRB) == comb_TRB)[1]]) %>%
+  distinct() %>%
+  ungroup() %>%
+  tidyr::pivot_wider( names_from = metaclusters , values_from = metacluster_count) %>%
+  mutate(across(!num_cells & !TCR_combination & !cdr3_nt_TRA & !cdr3_nt_TRB & !comb_TRA & !comb_TRB & !cdr3_TRA & !cdr3_TRB, ~.x/num_cells, .names = '{.col}.pct')) %>% 
+  arrange(desc(num_cells)) -> summary_of_clonotypes
+  
+#now handle the tissue data that was split off above `tissue_columns`
+tissue_summary <-tissue_columns %>% distinct() %>%  tidyr::pivot_wider( names_from = tissue, values_from = Tissue_count) %>% mutate(across(!TCR_combination & !num_cells, ~.x/num_cells, .names='{.col}.pct'))
+
+summary_of_clonotypes <- full_join(summary_of_clonotypes, tissue_summary, by = c('TCR_combination', 'num_cells'))
+```
+
+#combine summary with top donor for each clonotype and their HLA types, split V,J,C columns
+```{r}
+expanded_TCR_metadata %>% count(TCR_combination, donor, name = 'num_top_donor') %>% group_by(TCR_combination) %>% slice(which.max(num_top_donor)) -> combination_with_main_donor
+
+summary_of_clonotypes <- merge(x = summary_of_clonotypes, y = combination_with_main_donor, by = 'TCR_combination')
+
+summary_of_clonotypes %$% stringr::str_split_fixed(comb_TRA, pattern = "_", n=3) %>% `colnames<-`(c('alpha_V','alpha_J','alpha_C'))  -> alpha_split
+
+summary_of_clonotypes %$% stringr::str_split_fixed(comb_TRB, pattern = "_", n=3)  %>% `colnames<-`(c('beta_V',' beta_J','beta_C'))  -> beta_split
+
+summary_of_clonotypes <- bind_cols(summary_of_clonotypes, alpha_split, beta_split) %>% arrange(desc(num_cells))
+
+#HLA types
+arcas_out <- read.table('donor_hlas_from_arcasHLA.csv', header = T, sep = ',')
+rownames(arcas_out) %<>%  toupper()
+colnames(arcas_out) %<>% { paste0('donor_HLA_',.) }
+
+summary_of_clonotypes %<>% dplyr::left_join(arcas_out %>% tibble::rownames_to_column(var = 'donor'), by = 'donor')
+```
+
+#Fig 4.b Jaccard dissimilarity of clonotypes across metacluters - Just tumour
+```{r}
+library(ComplexHeatmap)
+library(viridis)
+
+hm_dat <- plot_similarity(expanded_TCR_metadata %>% filter(tissue == 'Tumour'), data_col = 'TCR_combination', cluster_col = 'metaclusters')
+hm_jaccard <- ComplexHeatmap::Heatmap(hm_dat@matrix, rect_gp = gpar(type = "none"), col = viridis(3), cell_fun =   function(j, i, x, y, w, h, fill) {
+  #print(i,j)
+    if(as.numeric(x) <= 1.1 - as.numeric(y)) {
+        grid.rect(x, y, w, h, gp = gpar(fill = fill, col = 'black'))
+        grid.text(sprintf("%.2f", hm_dat@matrix[i, j]), x, y)
+    }
+}, name = 'Jaccard', show_column_dend = F)
+hm_jaccard
+```
+
+
+#Fig 4.c VennDiagram 
+```{r}
+expanded_TCR_metadata %>%  filter(metaclusters == 'TEX' | metaclusters == 'TRM') %>% group_by(metaclusters) %>% select(TCR_combination) %>% group_split() -> tex_trm_tcr_lists
+names(tex_trm_tcr_lists) <- c('TEX', 'TRM')
+ggvenn(lapply(tex_trm_tcr_lists, pull)) + ggtitle('Expanded TCRs (by count) shared between TEX and TRM clusters')
+```
+#Fig 4.c Bubble Plots 
+```{r}
+##Bubble plots
+library(ggraph)
+library(igraph)
+library(viridis)
+library(magrittr)
+
+#hierarcy is root>combination>cell(colored by celltype)
+celltype_groupings <- expanded_TCR_metadata  %>% tibble::rownames_to_column() %>% select(metaclusters,  TCR_combination, rowname) %>% group_by(TCR_combination)  
+
+group_names <- group_keys(celltype_groupings)
+celltype_groupings %>% group_split() %>% lapply(FUN = function(x) 'TRM' %in% x$metaclusters && 'TEX' %in% x$metaclusters) %>% unlist() %>% which() %>% {group_names$TCR_combination[.]} -> TRX_TEM_sharing
+
+celltype_groupings %<>% filter(TCR_combination %in% TRX_TEM_sharing) %<>% group_by(TCR_combination)
+
+root_edges =  data.frame('a' = 'root', 'b' = group_keys(celltype_groupings)$TCR_combination)
+cell_edges = mapply(FUN = function(x, y) {
+  cbind('a' = x, 'b' = y$rowname) } ,
+  group_keys(celltype_groupings)$TCR_combination, group_split(celltype_groupings), USE.NAMES = F
+  ) %>% with(do.call(rbind,.)) %>% as.data.frame()
+
+edge_list <- as.matrix(rbind(root_edges, cell_edges))
+
+missing_node_names <- data.frame('rowname' = do.call(c, root_edges) %>% unique())
+
+vertex_meta <- expanded_TCR_metadata %>% filter(TCR_combination %in% celltype_groupings$TCR_combination) %>% tibble::rownames_to_column() %>% mutate(size = 1) %>% full_join(missing_node_names)  %>% mutate(metaclusters = replace(as.character(metaclusters), is.na(metaclusters), 'A-None'), 
+      tissue = replace(as.character(tissue), is.na(tissue), 'A-None')) %>% 
+    mutate(size = replace(size, is.na(size), 0),
+                               metaclusters =
+                                 factor(metaclusters, exclude = NULL, levels=c( "A-None","gdT" ,  "MAIT" ,  "TEM"  , "TEMRA", "TEX" ,  "TRM"),
+                                        ordered = T)
+                                          )
+#None type written as A-None so it is plotted first (ggraph always seems to sort levels alphabetically)
+
+
+
+tcr_graph <- igraph::graph_from_data_frame(edge_list, vertices = vertex_meta)
+celltype_colors <- RColorBrewer::brewer.pal(n = 6, name = 'Accent')
+#celltype_colors =  rev(c('#b35806','#f1a340','#fee0b6','#d8daeb','#998ec3','#542788'))
+#viridis(length(levels(vertex_meta$megaclusters))-1)
+names(celltype_colors) = levels(expanded_TCR_metadata$metaclusters)
+colors_for_scale <- c("A-None" = 'white', celltype_colors)
+
+tissue_colors <- RColorBrewer::brewer.pal(3, 'Set3')
+names(tissue_colors) = levels(as.factor(expanded_TCR_metadata$tissue))
+colors_for_tissue  <- c("A-None" = 'white', tissue_colors)
+
+graph_by_cluster <- ggraph(tcr_graph, layout = 'circlepack', weight = size) + 
+  geom_node_circle(aes(fill = metaclusters, color = factor(depth))) +
+  theme_void() + coord_fixed() +
+  scale_fill_manual(values=colors_for_scale, breaks = names(celltype_colors)) +
+  scale_color_manual(values = c("0" = "white", "1" = "black", "2" ="black"), breaks = c()) + guides(fill = guide_legend('Metacluster'))
+
+
+#Display plot
+graph_by_cluster + ggtitle('Breadth of TCR sharing for clonotypes that feature TRM-TEX sharing')
+```
+#Fig 4.d UpSet plots
+```{r}
+expanded_TCR_metadata %>%  filter(metaclusters == 'TEX' | metaclusters == 'TRM' | metaclusters == 'TEM') %>% 
+  group_by(metaclusters) %>% select(TCR_combination) %>% group_split() -> tex_trm_tem_lists
+names(tex_trm_tem_lists) <- lapply(tex_trm_tem_lists, function(x) head(x, n=1)$metaclusters) %>% unlist
+
+tex_trm_tem_lists <- lapply(tex_trm_tem_lists, function(x) {x %>% summarise(n=n(), .by = TCR_combination)} )
+
+quant_and_share_lists <- list()
+for (i in 1:length(tex_trm_tem_lists)) {
+  other_clusters = tex_trm_tem_lists[-i]
+  other_tcrs <- do.call(rbind, other_clusters)$TCR_combination %>% unique()
+  tex_trm_tem_lists[[i]] %>% mutate(shared = TCR_combination %in% other_tcrs) -> quant_and_share_lists[[i]]
+}
+names(quant_and_share_lists) <- names(tex_trm_tem_lists)
+
+
+#n of 1 removed
+filter_n1 <- lapply(quant_and_share_lists, function(x) filter(x,  n >1 ))
+#n of <=2 removed
+filter_n2 <- lapply(quant_and_share_lists, function(x) filter(x,  n >2))
+
+library(UpSetR)
+upset_no_filter <- upset(fromList(lapply(tex_trm_tem_lists, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_n1 <- upset(fromList(lapply(filter_n1, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_n2 <- upset(fromList(lapply(filter_n2, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+```
+
