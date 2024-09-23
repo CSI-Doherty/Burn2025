@@ -16,7 +16,7 @@ library(magrittr)
 
 #data load
 ```{r}
-seu_breast <- readRDS('DR_seu_breast_for_publication.Rds')
+#seu_breast <- readRDS('DR_seu_breast_for_publication.Rds')
 
 Idents(seu_breast) <- 'metaclusters'
 DimPlot(seu_breast, reduction = 'wnn.harmony.umap', label = T, group.by = 'metaclusters')
@@ -58,9 +58,6 @@ for(i in 1:length(expanded_TCR$cdr3s_comb)) {
 
 #Summary of clonotypes
 ```{r}
-#counts per clusters #print to screen
-expanded_TCR_metadata %>% group_by(metaclusters) %>% summarise(num_cells=n(), num_expansions=n_distinct(TCR_combination))
-
 #info per clonotype
 expanded_TCR_metadata %>% group_by(TCR_combination) %>% 
   add_count(name = 'num_cells') %>% #num of cells
@@ -111,6 +108,7 @@ summary_of_clonotypes %<>% dplyr::left_join(arcas_out %>% tibble::rownames_to_co
 library(ComplexHeatmap)
 library(viridis)
 
+#Breast
 hm_dat <- plot_similarity(expanded_TCR_metadata %>% filter(tissue == 'Tumour'), data_col = 'TCR_combination', cluster_col = 'metaclusters')
 hm_jaccard <- ComplexHeatmap::Heatmap(hm_dat@matrix, rect_gp = gpar(type = "none"), col = viridis(3), cell_fun =   function(j, i, x, y, w, h, fill) {
   #print(i,j)
@@ -120,6 +118,23 @@ hm_jaccard <- ComplexHeatmap::Heatmap(hm_dat@matrix, rect_gp = gpar(type = "none
     }
 }, name = 'Jaccard', show_column_dend = F)
 hm_jaccard
+
+
+#Pan-cancer
+new_zheng <- read.table('/data/gpfs/projects/punim1612/Mackay_Breast_Cancer_overflow/Tony/tcr_analysis/240530_full_dataset_burn.csv', sep = ',', header= T)  %>% filter(origin == 'zheng')
+
+zheng_meta <- new_zheng %>% mutate(TCR_combination = paste(cdr3_a_nucseq, cdr3_b_nucseq))
+expanded_clones_zheng_tumour <- zheng_meta %>% filter(tissue == 'tumour') %>% group_by(TCR_combination) %>% summarise(n = n()) %>% arrange(desc(n)) %>% filter(n >=2)
+expanded_clones_meta.tumour <- zheng_meta %>% filter(tissue == 'tumour') %>% filter(TCR_combination %in% expanded_clones_zheng_tumour$TCR_combination) 
+
+hm_dat_pancancer <- djvdj::plot_similarity(expanded_clones_meta.tumour, data_col = 'TCR_combination', cluster_col = 'celltype')
+hm_jaccard_pancancer <- ComplexHeatmap::Heatmap(hm_dat@matrix, rect_gp = gpar(type = "none"), col = viridis(3), cell_fun =   function(j, i, x, y, w, h, fill) {
+  #print(i,j)
+    if(as.numeric(x) <= 1.1 - as.numeric(y)) {
+        grid.rect(x, y, w, h, gp = gpar(fill = fill, col = 'black'))
+        grid.text(sprintf("%.2f", hm_dat@matrix[i, j]), x, y)
+    }
+}, name = 'Jaccard', show_column_dend = F)
 ```
 
 
@@ -188,6 +203,7 @@ graph_by_cluster <- ggraph(tcr_graph, layout = 'circlepack', weight = size) +
 graph_by_cluster + ggtitle('Breadth of TCR sharing for clonotypes that feature TRM-TEX sharing')
 ```
 #Fig 4.d UpSet plots
+##Breast Cancer
 ```{r}
 expanded_TCR_metadata %>%  filter(metaclusters == 'TEX' | metaclusters == 'TRM' | metaclusters == 'TEM') %>% 
   group_by(metaclusters) %>% select(TCR_combination) %>% group_split() -> tex_trm_tem_lists
@@ -215,6 +231,119 @@ upset_no_filter <- upset(fromList(lapply(tex_trm_tem_lists, function(x) x$TCR_co
 upset_n1 <- upset(fromList(lapply(filter_n1, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
 
 upset_n2 <- upset(fromList(lapply(filter_n2, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_no_filter
+grid.text("Breast, no filter",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+upset_n1
+grid.text("Breast, filter n>1",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+upset_n2
+grid.text("Breast, filter n>2",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+```
+##Liver
+```{r}
+seu_liver <- readRDS('/data/projects/punim1612/Mackay_Liver_Cancer/output/seu_cd8s_noMait_integrated.Rds')
+
+seu_liver@meta.data %<>% mutate(celltype_refined = case_when(CellType_major == 'UK' ~ 'TEM', .default = CellType_major))
+
+DimPlot(seu_liver, group.by = 'celltype_refined', reduction = 'wnn.umap.harmony')
+
+#Identify expanded clonotypes
+seu_liver@meta.data %>% mutate(combination = paste(comb_TRA, comb_TRB), cdr3s_comb = paste(cdr3_nt_TRA, cdr3_nt_TRB)) %>%
+  group_by(cdr3s_comb) %>% summarise(n = n(), alpha = comb_TRA, beta = comb_TRB, cdr3_A = cdr3_nt_TRA, cdr3_B = cdr3_nt_TRB) %>% filter(!is.na(alpha), !is.na(beta), !is.na(cdr3_A), !is.na(cdr3_B), n>=n_thresh_expansion) %>% distinct() %>% arrange(-n) %>% as.data.frame() -> expanded_TCR_liver
+
+expanded_TCR_metadata_liver = data.frame()
+
+for(i in 1:length(expanded_TCR_liver$cdr3s_comb)) {
+  a = expanded_TCR_liver[i,"alpha"] %>% as.character()
+  b = expanded_TCR_liver[i,"beta"] %>% as.character()
+  cdr3_a = expanded_TCR_liver[i, 'cdr3_A'] %>% as.character()
+  cdr3_b = expanded_TCR_liver[i,'cdr3_B'] %>% as.character()
+  m = seu_liver@meta.data[seu_liver$comb_TRA == a & seu_liver$comb_TRB == b & seu_liver$cdr3_nt_TRA == cdr3_a & seu_liver$cdr3_nt_TRB == cdr3_b,]
+  m = m[!is.na(m$orig.ident),]
+  m$TCR_combination <- expanded_TCR_liver$cdr3s_comb[i]
+  expanded_TCR_metadata_liver = rbind(expanded_TCR_metadata_liver, m) #steadily increasing to capture all the combinations.
+}
+
+expanded_TCR_metadata_liver %>% filter(celltype_refined == 'TEX' | celltype_refined == 'TRM' | celltype_refined == 'TEM') %>% 
+  group_by(celltype_refined) %>% select(TCR_combination) %>% group_split() -> tex_trm_tem_lists_liver
+names(tex_trm_tem_lists_liver) <- lapply(tex_trm_tem_lists_liver, function(x) head(x, n=1)$celltype_refined) %>% unlist
+
+tex_trm_tem_lists_liver <- lapply(tex_trm_tem_lists_liver, function(x) {x %>% summarise(n=n(), .by = TCR_combination)} )
+
+quant_and_share_lists_liver <- list()
+for (i in 1:length(tex_trm_tem_lists_liver)) {
+  other_clusters = tex_trm_tem_lists_liver[-i]
+  other_tcrs <- do.call(rbind, other_clusters)$TCR_combination %>% unique()
+  tex_trm_tem_lists_liver[[i]] %>% mutate(shared = TCR_combination %in% other_tcrs) -> quant_and_share_lists_liver[[i]]
+}
+names(quant_and_share_lists_liver) <- names(tex_trm_tem_lists_liver)
+
+
+#n of 1 removed
+filter_n1 <- lapply(quant_and_share_lists_liver, function(x) filter(x,  n >1 ))
+#n of <=2 removed
+filter_n2 <- lapply(quant_and_share_lists_liver, function(x) filter(x,  n >2))
+
+library(UpSetR)
+upset_no_filter_liver <- upset(fromList(lapply(tex_trm_tem_lists_liver, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_n1_liver <- upset(fromList(lapply(filter_n1, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_n2_liver <- upset(fromList(lapply(filter_n2, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_no_filter_liver
+grid.text("Liver, no filter",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+upset_n1_liver
+grid.text("Liver, filter n>1",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+upset_n2_liver
+grid.text("Liver, filter n>2",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+
+```
+
+##Pan-Cancer
+```{r}
+expanded_clones_meta.tumour %>%  filter(celltype == 'TEX' | celltype == 'TRM' | celltype == 'TEM') %>% filter(tissue == 'tumour') %>% group_by(celltype) %>% select(TCR_combination) %>% group_split() -> tex_trm_tem_lists_pancancer
+names(tex_trm_tem_lists_pancancer) <- lapply(tex_trm_tem_lists_pancancer, function(x) head(x, n=1)$celltype) %>% unlist
+
+tex_trm_tem_lists_pancancer <- lapply(tex_trm_tem_lists_pancancer, function(x) {x %>% summarise(n=n(), .by = TCR_combination)} )
+
+quant_and_share_lists_pancancer <- list()
+for (i in 1:length(tex_trm_tem_lists_pancancer)) {
+  other_clusters = tex_trm_tem_lists_pancancer[-i]
+  other_tcrs <- do.call(rbind, other_clusters)$TCR_combination %>% unique()
+  tex_trm_tem_lists_pancancer[[i]] %>% mutate(shared = TCR_combination %in% other_tcrs) -> quant_and_share_lists_pancancer[[i]]
+}
+names(quant_and_share_lists_pancancer) <- names(tex_trm_tem_lists_pancancer)
+
+#n of 1 removed
+filter_n1_pancancer <- lapply(quant_and_share_lists_pancancer, function(x) filter(x, !(shared == TRUE & n ==1)))
+
+#n of <=2 removed
+filter_n2_pancancer <- lapply(quant_and_share_lists_pancancer, function(x) filter(x, !(shared == TRUE & n <=2)))
+
+library(UpSetR)
+upset_no_filter_pancancer <- upset(fromList(lapply(tex_trm_tem_lists_pancancer, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_n1_pancancer <- upset(fromList(lapply(filter_n1_pancancer, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_n2_pancancer <- upset(fromList(lapply(filter_n2_pancancer, function(x) x$TCR_combination)), sets = c("TEX","TRM", "TEM"),keep.order = T, mainbar.y.label = "Clonotype Intersections", sets.x.label = "Clonotypes per Celltype", empty.intersections = 'on')
+
+upset_no_filter_pancancer
+grid.text("Pan-cancer, no filter",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+upset_n1_pancancer
+grid.text("Pan-cancer, filter n>1",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
+
+upset_n2_pancancer
+grid.text("Pan-cancer, filter n>2",x = 0.65, y=0.95, gp=gpar(fontsize=20))
+
 
 ```
 
