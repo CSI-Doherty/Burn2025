@@ -1,0 +1,506 @@
+Analysis of the GSE139555 integrated cancer dataset
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(scRepertoire)
+library(tidyverse)
+library(R.utils)
+```
+
+
+Load GSE139555 metadata,  integrated rds object only has scaled data we will need to use the raw data
+```{r}
+download.file('https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE139555&format=file', destfile = 'cancer_tcr/GSE139555_RAW.tar', method = 'wget')
+
+download.file('https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE139555&format=file&file=GSE139555%5Ftcell%5Fintegrated%2Erds%2Egz', destfile = 'GSE139555_tcell_integrated.rds.gz', method = 'wget')
+
+download.file('https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE139555&format=file&file=GSE139555%5Ftcell%5Fmetadata%2Etxt%2Egz', destfile = 'GSE139555_tcell_metadata.txt', method = 'wget')
+
+
+gunzip('GSE139555_tcell_integrated.rds.gz', overwrite = T)
+untar('GSE139555_RAW.tar', exdir = 'cancer_tcr/')
+
+files <- list.files('cancer_tcr')
+for (f in files) {
+	dir.create(paste0('cancer_tcr/',substr(f, 1,26)), showWarnings = FALSE)
+	file.rename(paste0('cancer_tcr/',f),paste0('cancer_tcr/',substr(f, 1,26),'/',substr(f, 28,80)) )
+	
+}
+
+counts <- read_rds('GSE139555_tcell_integrated.rds')
+meta.data <- read.table('GSE139555_tcell_metadata.txt')
+```
+
+```{r}
+# seu <- CreateSeuratObject(counts)
+# seu <- SetAssayData(seu, layer = 'scale.data', new.data = counts)
+# seu@meta.data <- meta.data
+```
+
+
+Check the metadata
+```{r}
+s <- sample(nrow(meta.data), 10000)
+
+
+ggplot(meta.data[s,], aes(x= UMAP_1, y = UMAP_2, color = clonotype)) + geom_point() + theme(legend.position="none")
+ggplot(meta.data[s,], aes(x= UMAP_1, y = UMAP_2, color = ident)) + geom_point() 
+ggplot(meta.data[s,], aes(x= UMAP_1, y = UMAP_2, color = patient)) + geom_point() + theme(legend.position="none")
+ggplot(meta.data[s,], aes(x= UMAP_1, y = UMAP_2, color = source)) + geom_point() 
+ggplot(meta.data[s,], aes(x= UMAP_1, y = UMAP_2, color = sample)) + geom_point() 
+
+clones <- table(meta.data$clonotype)
+clones[clones > 20]
+
+expanded <- names(clones[clones > 300])
+
+ggplot(meta.data[meta.data$clonotype %in% expanded,], aes(x= UMAP_1, y = UMAP_2, color = clonotype)) + geom_point() +xlim(c(-8,8)) + ggplot(meta.data[s,], aes(x= UMAP_1, y = UMAP_2, color = ident)) + geom_point() + xlim(c(-8,8))
+```
+```{r}
+# seu <- RunPCA(seu, features = rownames(counts))
+# 
+# seu <- RunUMAP(seu, dims = 1:20)
+# 
+# DimPlot(seu, label =T)
+```
+
+
+Load the raw data for each of the individual experiments (GSM4143655 - GSM4143686)
+each experiment has a subfolder with the cellranger matrix in the folder 'cancer_tcr/' 
+```{r}
+dirs <- list.dirs('./cancer_tcr/')
+objects = list()
+
+for(d in dirs[-1]){
+  s <- substr(d, 38,40)
+  c <- Read10X(d)
+  colnames(c) <- paste0(toupper(s), '_', colnames(c))
+  objects <- append(objects, CreateSeuratObject(c, min.cells = 3, project = s))
+}
+rm(c)
+
+```
+
+
+Merge data, store the authors integratinion in 'integrated' layer.  filtering PCA and UMAP
+```{r}
+seu.merged <- merge(objects[[1]], objects[-1])
+rm(objects)
+
+seu.merged <- AddMetaData(seu.merged, metadata = meta.data)
+rm(meta.data)
+
+seu.merged@meta.data$location <- substr(seu.merged$orig.ident,1,1)
+seu.merged@meta.data$tissue <- substr(seu.merged$orig.ident,2,2)
+seu.merged@meta.data$patient2 <- paste0(seu.merged$location,substr(seu.merged$orig.ident,3,3))
+
+
+seu.merged[['integrated']] <- CreateAssay5Object(counts)
+seu.merged <- SetAssayData(seu.merged, assay = 'integrated', layer = 'scale.data', new.data = counts)
+rm(counts)
+
+seu.merged <- RunPCA(seu.merged,  features = rownames(seu.merged@assays$integrated$scale.data), assay = 'integrated', reduction.name = 'integrated.pca')
+seu.merged <- RunUMAP(seu.merged, dims = 1:20, assay = 'integrated', reduction = 'integrated.pca', reduction.name = 'integrated.umap')
+DimPlot(seu.merged, reduction = 'integrated.umap')
+
+seu.merged$percent.mt <- PercentageFeatureSet(seu.merged, pattern = '^MT')
+FeatureScatter(seu.merged, 'nCount_RNA', 'percent.mt', group.by = 'orig.ident')
+seu.merged <- subset(seu.merged, percent.mt < 4)
+# 
+# 
+FeatureScatter(seu.merged, 'nCount_RNA', 'nFeature_RNA', group.by = 'orig.ident')
+seu.merged <- subset(seu.merged, nCount_RNA < 8000)
+seu.merged <- subset(seu.merged, nFeature_RNA < 2500)
+seu.merged <- subset(seu.merged, nFeature_RNA > 250)
+FeatureScatter(seu.merged, 'nCount_RNA', 'nFeature_RNA')
+
+
+seu.merged <- NormalizeData(seu.merged)
+#seu.merged <- SCTransform(seu.merged)
+seu.merged <- FindVariableFeatures(seu.merged)
+seu.merged <- ScaleData(seu.merged)
+
+seu.merged <- RunPCA(seu.merged)
+seu.merged <- RunUMAP(seu.merged, dims = 1:20)
+
+DimPlot(seu.merged)
+
+#saveRDS(seu.merged, 'merged.rds')
+```
+
+
+We use Harmony Integration rather than CCA Integration used by the original author since we expect different populations of cells between tissue types.  We integrate on the patients but not the tissues.
+```{r}
+seu.merged <- JoinLayers(seu.merged)
+
+seu.merged[["RNA"]] <- split(seu.merged[["RNA"]], f = seu.merged$patient2)
+
+seu.merged <- IntegrateLayers(seu.merged, method = HarmonyIntegration, orig.reduction = "pca", new.reduction = "harmony")
+
+seu.merged <- RunUMAP(seu.merged, reduction = 'harmony', reduction.name = 'harmony.umap', dims = 1:20)
+
+DimPlot(seu.merged, reduction = 'harmony.umap', split.by = 'tissue')
+```
+
+
+Add our signatures 
+```{r}
+#seu.merged <- readRDS('integrated.rds')
+
+# DimPlot(seu.merged, reduction = 'harmony.umap')
+
+trm_sig <- read.table('TRM_sig_new.txt')
+trm_up <- trm_sig[trm_sig$Direction == 'UP', 'Gene']
+tex_sig <- read.table('TEX_sig_new.txt')
+tex_up <- tex_sig[tex_sig$Direction == 'UP', 'Gene']
+naive_sig <- read.table('naive_sig.txt', header = T)
+naive_up <- toupper(naive_sig$V1)
+
+
+# m <- readRDS('../panCancer/megamarkers.rds')
+# tem_up <- m[m$cluster == 'TEM','gene']
+# temra_up <- m[m$cluster == 'TEMRA','gene']
+
+tem_up <-read.table('pancancer_TEM_signature.txt')[,1]
+temra_up <-read.table('pancancer_TEMRA_signature.txt')[,1]
+
+seu.merged <- JoinLayers(seu.merged)
+
+seu.merged <- AddModuleScore(seu.merged, features = list(trm_up), name = 'TRM_Score_')
+seu.merged <- AddModuleScore(seu.merged, features = list(tex_up), name = 'TEX_Score_')
+seu.merged <- AddModuleScore(seu.merged, features = list(tem_up), name = 'TEM_Score_')
+seu.merged <- AddModuleScore(seu.merged, features = list(temra_up), name = 'TEMRA_Score_')
+
+
+#saveRDS(seu.merged, 'integrated.rds')
+```
+
+
+```{r}
+# seu.merged <- readRDS('integrated.rds')
+
+FeaturePlot(seu.merged, features = 'TRM_Score_1', reduction = 'integrated.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+FeaturePlot(seu.merged, features = 'PTPRC', reduction = 'integrated.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'CD8A', reduction = 'integrated.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'CD4', reduction = 'integrated.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'CD3E', reduction = 'integrated.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+
+DimPlot(seu.merged, split.by = 'location', reduction = 'integrated.umap')
+DimPlot(seu.merged, split.by = 'location', reduction = 'umap')
+DimPlot(seu.merged, split.by = 'tissue', reduction = 'integrated.umap')
+DimPlot(seu.merged, split.by = 'tissue', reduction = 'umap', group.by = 'location')
+FeaturePlot(seu.merged, features = 'XIST', reduction = 'harmony.umap')
+
+FeaturePlot(seu.merged, features = 'nCount_RNA', reduction = 'harmony.umap')
+FeaturePlot(seu.merged, features = 'nFeature_RNA', reduction = 'harmony.umap')
+
+```
+
+
+```{r}
+DimPlot(seu.merged, reduction = 'integrated.umap', group.by = 'seurat_clusters', label = T)
+
+FeaturePlot(seu.merged, features = 'TRM_Score_1', reduction = 'integrated.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'TRM_Score_1', reduction = 'umap', min.cutoff = 'q5', max.cutoff = 'q95', split.by = 'location')
+
+
+VlnPlot(seu.merged, features = 'TRM_Score_1')
+VlnPlot(seu.merged, features = 'TRM_Score_1', split.by = 'location')
+
+```
+
+add cell cycle phase
+```{r}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+seu.merged <- CellCycleScoring(seu.merged, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+DimPlot(seu.merged, group.by = 'Phase', reduction = 'harmony.umap')
+```
+
+Check autors clones
+```{r}
+t <- table(seu.merged$clonotype)
+clones_1 <- names(t[t>0])
+clones_20 <- names(t[t>20])
+clones_100 <- names(t[t>100])
+
+
+seu.merged$expansion <- 'none'
+seu.merged$expansion[seu.merged$clonotype %in% clones_1] <- '1+'
+seu.merged$expansion[seu.merged$clonotype %in% clones_20]<- '20+'
+seu.merged$expansion[seu.merged$clonotype %in% clones_100] <- '100+'
+
+DimPlot(seu.merged, split.by = 'expansion', reduction = 'harmony.umap')
+FeaturePlot(seu.merged, features = 'TRM_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95', split.by = 'tissue')
+FeaturePlot(seu.merged, features = 'TEX_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95', split.by = 'tissue')
+FeaturePlot(seu.merged, features = 'TEM_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95', split.by = 'tissue')
+FeaturePlot(seu.merged, features = 'TEMRA_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95', split.by = 'tissue')
+
+FeaturePlot(seu.merged, features = 'MKI67', reduction = 'harmony.umap')
+FeaturePlot(seu.merged, features = c('CD4','CD8A'), reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, c('ITGAM', 'CD19'), reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, c('FOXP3', 'IL2RA'), reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+
+FeaturePlot(seu.merged, features = 'TRM_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'TEX_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'TEM_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(seu.merged, features = 'TEMRA_Score_1', reduction = 'harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+
+DimPlot(seu.merged, group.by = 'seurat_clusters', reduction = 'harmony.umap', label = T)
+```
+
+Annotate clusters 
+```{r}
+seu.merged <- FindNeighbors(seu.merged, reduction = 'harmony')
+seu.merged <- FindClusters(seu.merged, resolution = 1.2)
+
+DimPlot(seu.merged, group.by = 'seurat_clusters', reduction = 'harmony.umap', label = T)
+
+seu.merged$annot <- 'other'
+seu.merged$annot[seu.merged$seurat_clusters %in% c(12,3)] <- 'TRM'
+seu.merged$annot[seu.merged$seurat_clusters %in% c(6,9)] <- 'TEX'
+seu.merged$annot[seu.merged$seurat_clusters %in% c(0,4)] <- 'TEM'
+seu.merged$annot[seu.merged$seurat_clusters %in% c(1,13)] <- 'TEMRA'
+
+seu.merged$Tcell <- 'other'
+seu.merged$Tcell[seu.merged$seurat_clusters %in% c(1,2,3,4,9,13)] <- 'CD8'
+seu.merged$Tcell[seu.merged$seurat_clusters %in% c(0,6,7,8,12)] <- 'CD4'
+
+FindMarkers(seu.merged, ident.1 = c(8),  only.pos = T)
+
+VlnPlot(seu.merged, features = c('TRM_Score_1', 'TEM_Score_1'))
+```
+
+Load VDJ sequences and add to seurate object
+```{r}
+dirs <- list.dirs('./cancer_tcr/')
+tcrs <- list()
+
+for(d in dirs[-1]){
+  name <- substr(d, 38,40)
+  name <- toupper(name)
+  f <- list.files(d)
+  tcrs[[name]] <- read.csv(paste0(d, '/',f[2]))
+}
+
+library(scRepertoire)
+
+combine <- combineTCR(tcrs, samples = names(tcrs), filterMulti = T)
+clonalHomeostasis(combine, cloneCall = "aa")
+
+names(combine)
+names(combine)[c(1:12, 14:25, 27,28,30,31)]
+
+clonalHomeostasis(combine[c(1:12, 14:25, 27,28,30,31)], cloneCall = "strict")
+
+seu.merged <- combineExpression(combine, 
+                                   seu.merged, 
+                                   cloneCall="strict", 
+                                   group.by = "sample")
+```
+
+
+Filter T cells
+```{r}
+#seu.merged <- readRDS('integrated.rds')
+
+DimPlot(seu.merged, group.by = 'cloneType', reduction = 'harmony.umap')
+DimPlot(seu.merged, group.by = 'expansion', reduction = 'harmony.umap')
+
+DimPlot(seu.merged, group.by = 'cloneType', reduction = 'harmony.umap', split.by = 'orig.ident', ncol = 6)
+
+
+filtered <- subset(seu.merged, subset = seurat_clusters %in% c(0,1,2,3,4,6,7,8,9,12,13))
+
+filtered <- RunUMAP(filtered, dims = 1:20, reduction = 'harmony', reduction.name = 'filtered.harmony.umap')
+DimPlot(filtered, group.by = 'seurat_clusters', reduction = 'filtered.harmony.umap')
+
+FeaturePlot(filtered, c('CD8A', 'CD4'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('FOXP3', 'IL2RA'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('PDCD1', 'LAG3'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('SELL', 'S1PR1', 'CCR7', 'TCF7'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('KLF2', 'CX3CR1', 'ITGAE', 'TOX'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('EOMES', 'XCL1', 'IL7R', 'ZNF683'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+
+FeaturePlot(filtered, c('TRM_Score_1', 'TEX_Score_1'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('TEM_Score_1', 'TEMRA_Score_1'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+DimPlot(filtered, group.by = 'cloneType',reduction = 'filtered.harmony.umap')
+DimPlot(filtered, group.by = 'cloneType',reduction = 'filtered.harmony.umap', split.by = 'tissue')
+
+```
+
+
+Re-integrate and re-cluster the T cell subset
+```{r}
+filtered <- FindVariableFeatures(filtered)
+filtered <- ScaleData(filtered)
+filtered <- RunPCA(filtered)
+
+filtered[["RNA"]] <- split(filtered[["RNA"]], f = filtered$patient2)
+
+filtered <- IntegrateLayers(filtered, method = HarmonyIntegration, orig.reduction = "pca", new.reduction = "filtered.harmony")
+
+filtered <- RunUMAP(filtered, reduction = 'filtered.harmony', dims = 1:20, reduction.name = 'filtered.harmony.umap')
+DimPlot(filtered, reduction = 'filtered.harmony.umap')
+
+#saveRDS(filtered, 'filtered.rds')
+```
+
+
+Check the clustering, seperation into expected subsets
+```{r}
+FeaturePlot(filtered, c('CD8A', 'CD4'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('FOXP3', 'IL2RA'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('PDCD1', 'LAG3', 'ITGAE'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('SELL', 'S1PR1', 'CCR7', 'TCF7'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('IL7R', 'JUN', 'JUNB', 'ZFP36'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+
+FeaturePlot(filtered, c('TRM_Score_1', 'TEX_Score_1'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+FeaturePlot(filtered, c('TEM_Score_1', 'TEMRA_Score_1'),reduction = 'filtered.harmony.umap', min.cutoff = 'q5', max.cutoff = 'q95')
+
+DimPlot(filtered, group.by = 'Phase',reduction = 'filtered.harmony.umap')
+```
+
+
+Nearest neigbour clustering
+```{r}
+filtered <- FindNeighbors(filtered, reduction = 'filtered.harmony')
+filtered <- FindClusters(filtered, resolution = 1)
+
+filtered <- JoinLayers(filtered)
+m4 <- FindMarkers(filtered, ident.1 = 4)
+m0 <- FindMarkers(filtered, ident.1 = 0)
+m7 <- FindMarkers(filtered, ident.1 = 7)
+m14 <- FindMarkers(filtered, ident.1 = 14)
+m6 <- FindMarkers(filtered, ident.1 = 6)
+
+
+
+DimPlot(filtered, reduction = 'filtered.harmony.umap', group.by = 'seurat_clusters', label = T)
+DimPlot(filtered, reduction = 'filtered.harmony.umap', group.by = 'annot', split.by = 'location')
+
+DimPlot(filtered, reduction = 'filtered.harmony.umap', group.by =  'ident',  label = T)
+
+FeaturePlot(filtered, 'nCount_RNA', reduction = 'filtered.harmony.umap')
+```
+
+
+Annotate clusters
+```{r}
+#filtered <- readRDS('filtered.rds')
+filtered$annot <- 'other'
+filtered$annot[filtered$seurat_clusters %in% c(3)] <- 'CD4 Treg'
+filtered$annot[filtered$seurat_clusters %in% c(13)] <- 'CD4 Tex'
+filtered$annot[filtered$seurat_clusters %in% c(1,16)] <- 'CD4 Trm'
+filtered$annot[filtered$seurat_clusters %in% c(7,8,10)] <- 'CD4 Tem'
+filtered$annot[filtered$seurat_clusters %in% c(0,15,5)] <- 'CD8 Trm'
+filtered$annot[filtered$seurat_clusters %in% c(4)] <- 'CD8 Tex'
+filtered$annot[filtered$seurat_clusters %in% c(9,6)] <- 'CD8 Tem'
+filtered$annot[filtered$seurat_clusters %in% c(2,12)] <- 'Temra'
+filtered$annot[filtered$seurat_clusters %in% c(11)] <- 'CD4 Tcm'
+filtered$annot[filtered$seurat_clusters %in% c(14)] <- 'Teff'
+filtered$annot[filtered$seurat_clusters %in% c(17)] <- 'Cycling'
+```
+
+Compare tumour type and tissues, cell type composition looks good. 
+```{r}
+DimPlot(filtered, group.by = 'annot', reduction = 'filtered.harmony.umap', label = T)
+DimPlot(filtered, group.by = 'annot', reduction = 'filtered.harmony.umap',  split.by = 'tissue')
+DimPlot(filtered, group.by = 'annot', reduction = 'filtered.harmony.umap',  split.by = 'location')
+
+DimPlot(filtered, , reduction = 'integrated.umap', split.by = 'location')
+
+DimPlot(filtered[,filtered$location == 'C'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+DimPlot(filtered[,filtered$location == 'E'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+DimPlot(filtered[,filtered$location == 'L'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+DimPlot(filtered[,filtered$location == 'R'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+
+saveRDS(filtered, 'filtered.rds')
+```
+
+
+Trajectory analysis
+```{r}
+library(slingshot)
+
+
+sce <- as.SingleCellExperiment(filtered, assay = 'RNA')
+
+sce <- slingshot(sce, clusterLabels = 'seurat_clusters',  reducedDim = 'FILTERED.HARMONY.UMAP')
+
+summary(sce$slingPseudotime_1)
+
+#sce$pseudotime <- rowMeans(cbind(sce2$slingPseudotime_1, sce2$slingPseudotime_2, sce2$slingPseudotime_3, sce2$slingPseudotime_4), na.rm = T)
+```
+
+```{r}
+library(grDevices)
+library(RColorBrewer)
+
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+plot(reducedDims(sce)$FILTERED.HARMONY.UMAP, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+
+
+plotcol <- colors[cut(sce$slingPseudotime_2, breaks=100)]
+plot(reducedDims(sce)$FILTERED.HARMONY.UMAP, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+
+plotcol <- colors[cut(sce$slingPseudotime_3, breaks=100)]
+plot(reducedDims(sce)$FILTERED.HARMONY.UMAP, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+
+
+#plotcol <- colors[cut(sce2$pseudotime, breaks=100)]
+```
+
+
+Proprtion and counts of annotated cell types by tumour type and patient
+```{r}
+df <- filtered@meta.data
+
+tumour <- df[df$tissue == 'T',]
+
+df2 <- as.data.frame(prop.table(table(tumour$annot, tumour$location), margin = 2))
+df2
+ggplot(df2, aes(x = Var2, y = Freq, fill = Var1)) + 
+    geom_col()
+```
+
+```{r}
+df <- filtered@meta.data
+
+tumour <- df[df$tissue == 'T' ,] 
+openxlsx::write.xlsx(table(tumour$annot,tumour$patient), 'tumour_cell_counts.xlsx')
+```
+
+
+Dashboard for collaborator
+```{r}
+library(ShinyCell)
+
+#filtered <- JoinLayers(filtered)
+filtered@reductions <-  filtered@reductions[-c(1,2)]
+scConf = createConfig(filtered)
+makeShinyApp(filtered, scConf, gene.mapping = TRUE, 
+             shiny.title = "Shared clones healthy and tumour", shiny.dir = '/Shiny')
+```
+
+
+
+
+
+
+

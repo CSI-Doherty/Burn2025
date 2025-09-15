@@ -1,0 +1,612 @@
+Analysis of the shared TCR clones in the GSE139555 dataset
+
+```{r}
+library(Seurat)
+library(ggplot2)
+library(tidyverse)
+library(openxlsx)
+```
+
+
+Load the annotated T cells
+```{r}
+filtered <- readRDS('filtered.rds')
+DimPlot(filtered, group.by = 'annot', reduction = 'filtered.harmony.umap', label = T)
+DimPlot(filtered, group.by = 'annot', reduction = 'filtered.harmony.umap',  split.by = 'tissue')
+DimPlot(filtered, group.by = 'annot', reduction = 'filtered.harmony.umap',  split.by = 'location')
+
+DimPlot(filtered, , reduction = 'integrated.umap', split.by = 'location')
+```
+
+```{r}
+
+DimPlot(filtered[,filtered$location == 'C'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+DimPlot(filtered[,filtered$location == 'E'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+DimPlot(filtered[,filtered$location == 'L'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+DimPlot(filtered[,filtered$location == 'R'],  group.by = 'cloneType', reduction = 'filtered.harmony.umap', split.by = 'tissue')
+
+```
+
+
+Filter CD8s and remove incomplete TCR sequences
+```{r}
+#clones <- table(trms$clonotype, trms$location)
+# clones2 <- table(trms$CTaa, trms$tissue, trms$location)
+filtered$CTnt[c(grep('_NA$', filtered$CTnt),grep('^NA_', filtered$CTnt)) ] <- NA
+filtered2 <- subset(filtered, annot %in% c('CD8 Trm', 'CD8 Tex', 'CD8 Tem') & tissue %in% c('T','N'))
+
+
+#Counts for each unique TCR sequence
+clones2 <- table(filtered2$CTnt, filtered2$tissue, filtered2$location)
+clones3 <- table(filtered2$CTnt, filtered2$annot,filtered2$location)
+
+
+#clones2[clones2[,2] > 1 | clones2[,3] > 1,]
+
+
+colon <- clones2[,,'C']
+endometrial <- clones2[,,'E']
+lung <- clones2[,,'L']
+renal <- clones2[,,'R']
+
+# shared_c <- colon[colon[,3] > 1 & (colon[,1] > 1 | colon[,2] >1),]
+# shared_e <- endometrial[endometrial[,3] > 1 & (endometrial[,1] > 1 | endometrial[,2] > 1),]
+# shared_l <- lung[lung[,3] > 1 & (lung[,1] > 1 | lung[,2] > 1),]
+# shared_r <- renal[renal[,3] > 1 & (renal[,1] > 1 |renal[,2] > 1),]
+
+## Expaneded TCR sequences which are in both the Tumour and Healthy tissue
+shared_c <- colon[(colon[,1] > 1 & colon[,2] >1),]
+shared_e <- endometrial[(endometrial[,1] > 1 & endometrial[,2] > 1),]
+shared_l <- lung[(lung[,1] > 1 & lung[,2] > 1),]
+shared_r <- renal[(renal[,1] > 1 & renal[,2] > 1),]
+
+c_shared_cell_counts <- clones3[rownames(shared_c),,'C']
+e_shared_cell_counts <- clones3[rownames(shared_e),,'E']
+l_shared_cell_counts <- clones3[rownames(shared_l),,'L']
+r_shared_cell_counts <- clones3[rownames(shared_r),,'R']
+
+## Expanded only in healthy or Tumour
+# healthy_c <- colon[colon[,2] > 1 & colon[,3] == 0,]
+# healthy_e <- endometrial[endometrial[,2] > 1 & endometrial[,3] == 0,]
+# healthy_l <- lung[lung[,2] > 1 & lung[,3] == 0,]
+# healthy_r <- renal[renal[,2] > 1 & renal[,3] == 0,]
+# 
+# tumour_c <- colon[colon[,2] == 0 & colon[,3] > 1,]
+# tumour_e <- endometrial[endometrial[,2] == 0 & endometrial[,3] > 1,]
+# tumour_l <- lung[lung[,2] == 0 & lung[,3] > 1,]
+# tumour_r <- renal[renal[,2] == 0 & renal[,3] > 1,]
+
+
+# write.xlsx(list(shared_colon = shared_c,shared_endometrial = shared_e, shared_lung = shared_l, shared_renal = shared_r, healthy_colon = healthy_c, healthy_endometrial = healthy_e, healthy_lung = healthy_l, healthy_renal = healthy_r, tumour_colon = tumour_c, tumour_endometrial = tumour_e, tumour_lung =  tumour_l, tumour_renal = tumour_r), 'expanded_clones.xlsx')
+
+# hist(clones[clones[,2] > 1,2], breaks =150)
+# hist(clones[clones[,3] > 1,3], breaks =150)
+
+#saveRDS(seu.merged, 'integrated.rds')
+
+# c_shared_cell_counts
+# e_shared_cell_counts
+# l_shared_cell_counts
+# r_shared_cell_counts
+
+c_both <- cbind(shared_c, c_shared_cell_counts)
+e_both <- cbind(shared_e, e_shared_cell_counts)
+l_both <- cbind(shared_l, l_shared_cell_counts)
+r_both <- cbind(shared_r, r_shared_cell_counts)
+
+write.xlsx(list(shared_colon = c_both,shared_endometrial = e_both, shared_lung = l_both, shared_renal = r_both), 'shared__clones.xlsx', rowNames = T)
+```
+
+
+
+```{r}
+filtered2$annot_tissue <- paste0(filtered2$annot, '_', filtered2$tissue)
+
+DimPlot(filtered2, group.by = 'annot_tissue', reduction = 'filtered.harmony.umap')
+
+clones4 <- table(filtered2$CTnt, filtered2$annot_tissue,filtered2$location)
+
+c_split <- clones4[rownames(shared_c),,'C']
+e_split <- clones4[rownames(shared_e),,'E']
+l_split <- clones4[rownames(shared_l),,'L']
+r_split <- clones4[rownames(shared_r),,'R']
+
+
+heatmap(c_split, Colv = NA)
+heatmap(e_split, Colv = NA)
+heatmap(l_split, Colv = NA)
+heatmap(r_split, Colv = NA)
+
+write.xlsx(list(colon = c_split, endometrial = e_split, lung = l_split, renal = r_split), 'shared_clones_split_by_cell_tissue.xlsx')
+```
+
+Colon clone Expanded in both Healthy and Tumour , for Sup Fig 6d
+```{r}
+min_clones <- 0
+
+# Healthy TRM, TEX, TEM 
+c_split_n <- c_split[,c(1,3,5)]
+
+# Tumour TRM, TEX, TEM
+c_split_t <- c_split[,c(2,4,6)]
+
+
+c_shared_count <- crossprod((c_split_t > min_clones),  (c_split_n > min_clones))
+
+
+heatmap(c_shared_count, Rowv = NA, Colv = NA, , scale = 'none', margins = c(10,10))
+
+df_c <- data.frame(c_shared_count)
+
+ch <- df_c %>% 
+  mutate(y = rownames(.)) %>% 
+  pivot_longer(-y, names_to = "x")
+
+
+
+ggplot(ch, aes(x, y, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = value), size = 8 / .pt) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#00441B") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+Endometrial clone Expanded in both Healthy and Tumour, for Sup Fig 6d
+```{r}
+# Healthy TRM, TEX, TEM 
+e_split_n <- e_split[,c(1,3,5)]
+
+# Tumour TRM, TEX, TEM
+e_split_t <- e_split[,c(2,4,6)]
+
+e_shared_count <- crossprod((e_split_t > min_clones),  (e_split_n > min_clones))
+
+heatmap(e_shared_count, Rowv = NA, Colv = NA, , scale = 'none', margins = c(10,10))
+
+df_e <- data.frame(e_shared_count)
+
+eh <- df_e %>% 
+  mutate(y = rownames(.)) %>% 
+  pivot_longer(-y, names_to = "x")
+
+# For Sup Fig 6d
+ggplot(eh, aes(x, y, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = value), size = 8 / .pt) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#00441B") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+Lung clone Expanded in both Healthy and Tumour, for Sup Fig 6d
+```{r}
+# Healthy TRM, TEX, TEM 
+l_split_n <- l_split[,c(1,3,5)]
+
+# Tumour TRM, TEX, TEM
+l_split_t <- l_split[,c(2,4,6)]
+
+l_shared_count <- crossprod((l_split_t > min_clones),  (l_split_n > min_clones))
+
+heatmap(l_shared_count, Rowv = NA, Colv = NA, scale = 'none', margins = c(10,10))
+
+df_l <- data.frame(l_shared_count)
+
+lh <- df_l %>% 
+  mutate(y = rownames(.)) %>% 
+  pivot_longer(-y, names_to = "x")
+
+# For Sup Fig 6d
+ggplot(lh, aes(x, y, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = value), size = 8 / .pt) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#00441B") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+Renal clone Expanded in both Healthy and Tumour, for Sup Fig 6d
+```{r}
+# Healthy TRM, TEX, TEM 
+r_split_n <- r_split[,c(1,3,5)]
+
+# Tumour TRM, TEX, TEM
+r_split_t <- r_split[,c(2,4,6)]
+
+r_shared_count <- crossprod((r_split_t > min_clones),  (r_split_n > min_clones))
+
+# Tumor and blood
+# r_shared_count2 <- crossprod((r_split_t > min_clones),  (r_split_b > min_clones))
+
+
+heatmap(r_shared_count, Rowv = NA, Colv = NA, scale = 'none', margins = c(10,10))
+# heatmap(r_shared_count2, Rowv = NA, Colv = NA, scale = 'none', margins = c(10,10))
+
+
+df_r <- data.frame(r_shared_count)
+
+rh <- df_r %>% 
+  mutate(y = rownames(.)) %>% 
+  pivot_longer(-y, names_to = "x")
+
+# For Sup Fig 6d
+ggplot(rh, aes(x, y, fill = value)) +
+  geom_tile() +
+  geom_text(aes(label = value), size = 8 / .pt) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#00441B") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL, y = NULL, fill = NULL)
+
+# df_r2 <- data.frame(r_shared_count2)
+# 
+# rh2 <- df_r2 %>% 
+#   mutate(y = rownames(.)) %>% 
+#   pivot_longer(-y, names_to = "x")
+# 
+# ggplot(rh2, aes(x, y, fill = value)) +
+#   geom_tile() +
+#   geom_text(aes(label = value), size = 8 / .pt) +
+#   scale_fill_gradient(low = "#F7FCF5", high = "#00441B") +
+#   theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+#   labs(x = NULL, y = NULL, fill = NULL)
+```
+
+Look at the largest clones in both TRM and TEX
+```{r}
+library(RColorBrewer)
+
+
+trm_tex <- c(rownames(e_split)[e_split[,c('CD8 Trm_N')] >4 & e_split[,c('CD8 Tex_T')] >4],rownames(l_split)[l_split[,c('CD8 Trm_N')] >4 & l_split[,c('CD8 Tex_T')] >4], rownames(c_split)[c_split[,c('CD8 Trm_N')] >4 & c_split[,c('CD8 Tex_T')] >4])
+
+
+trm_tex_barcodes <- colnames(filtered)[filtered$CTnt %in% trm_tex]
+
+hl <- lapply(trm_tex, function(x) {colnames(filtered)[filtered$CTnt %in% x]})
+cl <- as.factor(filtered$CTnt[filtered$CTnt %in% trm_tex])
+
+names(hl) <- trm_tex
+cp <- colorRampPalette(colors = c('red','yellow','blue'))(nlevels(cl))
+
+DimPlot(filtered, cells.highlight = hl, reduction = 'filtered.harmony.umap', raster = FALSE, cols.highlight = cp)
+DimPlot(filtered, cells.highlight = hl, reduction = 'filtered.harmony.umap', raster = FALSE, cols.highlight = cp, split.by = 'location')
+```
+
+
+```{r}
+library(ggalluvial)
+
+#filtered <- readRDS('filtered.rds')
+
+df <- filtered2@meta.data
+df <- df[df$annot %in% c('CD8 Trm', 'CD8 Tex', 'CD8 Tem'),]
+
+df2 <-  df[!is.na(df$CTaa),]
+
+df2$aa <- factor(df2$CTaa)
+df2$tissue <- factor(df2$tissue)
+df2$annot <- factor(df2$annot)
+
+
+counts_table <- table(df2$CTaa, df2$annot, df2$tissue) 
+
+#cd4_tex <- rownames(counts_table)[counts_table[,3,3] > 0]
+cd8_tex <- rownames(counts_table)[counts_table[,2,2] > 0]
+
+t_table <- table(df2$CTaa, df2$tissue)
+shared <- rownames(t_table)[t_table[,2] > 0 & t_table[,1] >0]
+
+
+shared_tex <- shared[shared %in% cd8_tex]
+
+shared_tex_filt <- shared_tex[-grep('^NA', shared_tex)]
+shared_tex_filt <- shared_tex_filt[-grep('_NA$', shared_tex)]
+
+df_shared_tex <- df2[df2$CTaa %in% shared_tex_filt,]
+df_shared_tex <- df_shared_tex[df_shared_tex$annot %in% c('CD8 Trm', 'CD8 Tem', 'CD8 Tex', 'Temra'),]
+pt <- prop.table(table(df_shared_tex$annot, df_shared_tex$tissue, df_shared_tex$location),margin = 2)
+
+tab <- as.data.frame(pt)
+ggplot(tab,aes(x=Var2,y=Freq,fill=Var1)) + geom_col()
+
+counts <- count(df_shared_tex, tissue,  annot)
+#counts$location <- as.factor(counts$location)
+
+tab$Var3 <- as.factor(paste(tab$Var1, tab$Var3, sep = '_'))
+
+tab <- tab[tab$Var2 != 'B',]
+tab <- tab[tab$Var1 %in% c('CD8 Trm', 'CD8 Tem', 'CD8 Tex', 'Temra'),]
+
+counts <- transform(counts, annot = factor(annot, rev(levels(annot))))
+ggplot(counts, aes(x = tissue, stratum = annot, alluvium = annot, y = n, label = annot, fill = annot)) + geom_flow() +geom_flow() +  geom_stratum(alpha = .8)
+
+
+cbPalette <- c("#D55E00", "#E69F00", "#56B4E9", "#009E73", "#D55E00", "#E69F00", "#56B4E9", "#009E73","#D55E00", "#E69F00", "#56B4E9", "#009E73", "#D55E00", "#E69F00", "#56B4E9", "#D55E00")
+ggplot(tab, aes(x = Var2, stratum = Var3, alluvium = Var3, y = Freq, label = Var3, fill = Var3)) + geom_flow() + geom_stratum(alpha = .8) + labs(title='Shared clones - Cell Type ratios - Normal and Tumour by Tumour Type')#+ scale_fill_manual(values=cbPalette)
+
+
+df_c <- df_shared_tex[df_shared_tex$location == 'C',]
+df_c <- df_c[df_c$annot %in% c('CD8 Trm', 'CD8 Tem', 'CD8 Tex', 'Temra'),]
+c_counts <- count(df_c, tissue, annot, patient2)
+c_counts$a_p <- paste(c_counts$annot, c_counts$patient2, sep = '_patient_')
+
+ggplot(c_counts, aes(x = tissue, stratum = a_p, alluvium = a_p, y = n, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5)
+
+pt <- prop.table(table(df_c$annot, df_c$tissue, df_c$patient2), margin = 2)
+df_pc <- as.data.frame(pt)
+
+df_pc$a_p <- paste(df_pc$Var1, df_pc$Var3, sep = '_patient_')
+df_pc <- df_pc[df_pc$Freq > 0 ,]
+ggplot(df_pc, aes(x = Var2, stratum = a_p, alluvium = a_p, y = Freq, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5)  +
+	labs(title='Shared Clones - Cell type ratios 
+Colon Healthy and Tumour by donor')
+
+
+df_e <- df_shared_tex[df_shared_tex$location == 'E',]
+df_e <- df_e[df_e$annot %in% c('CD8 Trm', 'CD8 Tem', 'CD8 Tex', 'Temra'),]
+e_counts <- count(df_e, tissue, annot, patient2)
+e_counts$a_p <- paste(e_counts$annot, e_counts$patient2, sep = '_patient_')
+ggplot(e_counts, aes(x = tissue, stratum = a_p, alluvium = a_p, y = n, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5) 
+
+pt <- prop.table(table(df_e$annot, df_e$tissue, df_e$patient2), margin = 2)
+df_pe <- as.data.frame(pt)
+
+df_pe$a_p <- paste(df_pe$Var1, df_pe$Var3, sep = '_patient_')
+df_pe <- df_pe[df_pe$Freq > 0,]
+
+ggplot(df_pe, aes(x = Var2, stratum = a_p, alluvium = a_p, y = Freq, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5) + 
+	labs(title='Shared Clones - Cell type ratios 
+Endometrial Healthy and Tumour by donor')
+
+
+df_l <- df_shared_tex[df_shared_tex$location == 'L',]
+df_l <- df_l[df_l$annot %in% c('CD8 Trm', 'CD8 Tem', 'CD8 Tex', 'Temra'),]
+l_counts <- count(df_l, tissue, annot, patient2)
+l_counts$a_p <- paste(l_counts$annot, l_counts$patient2, sep = '_patient_')
+ggplot(l_counts, aes(x = tissue, stratum = a_p, alluvium = a_p, y = n, label = annot, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5) 
+
+
+pt <- prop.table(table(df_l$annot, df_l$tissue, df_l$patient2), margin = 2)
+df_pl <- as.data.frame(pt)
+
+df_pl$a_p <- paste(df_pl$Var1, df_pl$Var3, sep = '_patient_')
+df_pl <- df_pl[df_pl$Freq > 0,]
+df_pl <- df_pl[df_pl$Var2 != 'B',]
+ggplot(df_pl, aes(x = Var2, stratum = Var1, alluvium = a_p, y = Freq, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5) +
+	labs(title='Shared Clones - Cell type ratios
+Lung Healthy and Tumour by donor')
+
+
+df_r <- df_shared_tex[df_shared_tex$location == 'R',]
+df_r <- df_r[df_r$annot %in% c('CD8 Trm', 'CD8 Tem', 'CD8 Tex', 'Temra'),]
+r_counts <- count(df_shared_tex[df_shared_tex$location == 'R',], tissue, annot, patient2)
+r_counts$a_p <- paste(r_counts$annot, r_counts$patient2, sep = '_')
+ggplot(r_counts, aes(x = tissue, stratum = a_p, alluvium = a_p, y = n, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5)
+
+pt <- prop.table(table(df_r$annot, df_r$tissue, df_r$patient2), margin = 2)
+df_pr <- as.data.frame(pt)
+
+df_pr$a_p <- paste(df_pr$Var1, df_pr$Var3, sep = '_patient_')
+df_pr <- df_pr[df_pr$Freq > 0,]
+df_pr <- df_pr[df_pr$Var2 != 'B',]
+ggplot(df_pr, aes(x = Var2, stratum = a_p, alluvium = a_p, y = Freq, label = a_p, fill = a_p)) + 
+  geom_flow() +
+  geom_stratum(alpha = .5) +
+	labs(title='Shared Clones - Cell type ratios 
+Renal Healthy and Tumour by donor')
+
+```
+```{r}
+df <- filtered@meta.data
+
+tumour <- df[df$tissue == 'T',]
+
+df2 <- as.data.frame(prop.table(table(tumour$annot, tumour$location), margin = 2))
+df2
+ggplot(df2, aes(x = Var2, y = Freq, fill = Var1)) + 
+    geom_col()
+```
+
+```{r}
+df <- filtered@meta.data
+
+tumour <- df[df$tissue == 'T' ,] 
+openxlsx::write.xlsx(table(tumour$annot,tumour$patient), 'tumour_cell_counts.xlsx')
+```
+
+
+Chord diagrams for Fig 4k and Sup Fig 6e
+```{r}
+library(circlize)
+min <- 0
+grid.col = structure(c(rep(2, 5), rep(3, 5), rep(4, 5)),
+                names = c(paste0("A", 1:5), paste0("B", 1:5), paste0("C", 1:5)))
+
+c_tex_shared <- c_split[c_split[,'CD8 Trm_N'] > min & c_split[,'CD8 Tex_T'] > min,]
+rownames(c_tex_shared) <- 1:nrow(c_tex_shared)
+colnames(c_tex_shared) <- c("Tem_N", 'Tem_T', 'Tex_N', 'Tex_T', 'Trm_N', 'Trm_T')
+
+pdf('chord_diagrams.pdf')
+g1 <- c('N','T','N','T','N','T',rep('C',nrow(c_tex_shared)))
+names(g1) <- c(colnames(c_tex_shared),rownames(c_tex_shared))
+chordDiagram(c_tex_shared, group = g1, grid.col = grid.col,
+    annotationTrack = c("grid", "axis"),
+    preAllocateTracks = list(
+        track.height = mm_h(4),
+        track.margin = c(mm_h(4), 0) ))
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), gsub('_.', '',sector.index), cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+highlight.sector(rownames(c_tex_shared), track.index = 1, col = "blue", 
+    text = "Clones", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Trm_N', 'Tex_N'), track.index = 1, col = "green", 
+    text = "Healthy", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c( 'Trm_T', 'Tex_T'), track.index = 1, col = "red", 
+    text = "Tumour", cex = 0.8, text.col = "white", niceFacing = TRUE)
+title("Colon")
+circos.clear()
+
+
+min <- 4
+e_tex_shared <- e_split[e_split[,'CD8 Tex_T'] > min & e_split[,'CD8 Trm_N'] > min,]
+e_tex_shared <- e_tex_shared[,c(1,2,5,4,3,6)]
+
+rownames(e_tex_shared) <- 1:nrow(e_tex_shared)
+g2 <- c('N','T','N','T','N','T',rep('C',nrow(e_tex_shared)))
+colnames(e_tex_shared) <- c("Tem_N", 'Tem_T','Trm_N', 'Tex_T','Tex_N', 'Trm_T')
+
+names(g2) <- c(colnames(e_tex_shared),rownames(e_tex_shared))
+chordDiagram(e_tex_shared, group = g2, grid.col = grid.col,
+    annotationTrack = c("grid", "axis"),
+    preAllocateTracks = list(
+        track.height = mm_h(4),
+        track.margin = c(mm_h(4), 0) ))
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), gsub('_.', '',sector.index), cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+highlight.sector(rownames(e_tex_shared), track.index = 1, col = "blue", 
+    text = "Clones", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Tem_N','Trm_N', 'Tex_N'), track.index = 1, col = "green", 
+    text = "Healthy", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Tem_T', 'Trm_T', 'Tex_T'), track.index = 1, col = "red", 
+    text = "Tumour", cex = 0.8, text.col = "white", niceFacing = TRUE)
+title("Endometrial")
+circos.clear()
+
+min <- 3
+l_tex_shared <- l_split[l_split[,'CD8 Tex_T'] > min & l_split[,'CD8 Trm_N'] > min ,]
+rownames(l_tex_shared) <- 1:nrow(l_tex_shared)
+g3 <- c('N','T','N','T','N','T',rep('C',nrow(l_tex_shared)))
+colnames(l_tex_shared) <- c("Tem_N", 'Tem_T', 'Tex_N', 'Tex_T', 'Trm_N', 'Trm_T')
+
+names(g3) <- c(colnames(l_tex_shared),rownames(l_tex_shared))
+chordDiagram(l_tex_shared, group = g3, grid.col = grid.col,
+    annotationTrack = c("grid", "axis"),
+    preAllocateTracks = list(
+        track.height = mm_h(4),
+        track.margin = c(mm_h(4), 0) ))
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), gsub('_.', '',sector.index), cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+highlight.sector(rownames(l_tex_shared), track.index = 1, col = "blue", 
+    text = "Clones", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Tem_N','Trm_N', 'Tex_N'), track.index = 1, col = "green", 
+    text = "Healthy", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Tem_T', 'Trm_T', 'Tex_T'), track.index = 1, col = "red", 
+    text = "Tumour", cex = 0.8, text.col = "white", niceFacing = TRUE)
+title("Lung")
+circos.clear()
+
+min <- 0
+r_tex_shared <- r_split[r_split[,'CD8 Tex_T'] > min & r_split[,'CD8 Trm_N'] > min,]
+#rownames(r_tex_shared) <- 1:nrow(r_tex_shared)
+# g4 <- c('N','T','N','T','N','T',rep('C',nrow(r_tex_shared)))
+# names(g4) <- c(colnames(r_tex_shared),rownames(r_tex_shared))
+
+# rownames(r_tex_shared) <- 1 
+# g4 <- c('N','T','N','T','N','T',rep('C',1))
+# names(g4) <- c(colnames(r_tex_shared),rownames(r_tex_shared))
+# chordDiagram(r_tex_shared, group = g4)
+# circos.clear()
+
+
+rownames(c_tex_shared) <- paste('C', rownames(c_tex_shared))
+rownames(e_tex_shared) <- paste('E', rownames(e_tex_shared))
+rownames(l_tex_shared) <- paste('L', rownames(l_tex_shared))
+
+pooled <- rbind(c_tex_shared, e_tex_shared[,c(1,2,5,4,3,6)], l_tex_shared)
+
+pooled2 <- pooled[c(2,6,8,10,11,15),]
+
+
+g5 <- c('N','T','N','T','N','T',rep('C',6))
+names(g5) <- c(colnames(pooled2),rownames(pooled2))
+chordDiagram(pooled2, group = g5, grid.col = grid.col,
+    annotationTrack = c("grid", "axis"),
+    preAllocateTracks = list(
+        track.height = mm_h(4),
+        track.margin = c(mm_h(4), 0) ))
+circos.track(track.index = 2, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    ylim = get.cell.meta.data("ylim")
+    circos.text(mean(xlim), mean(ylim), gsub('_.', '',sector.index), cex = 0.6, niceFacing = TRUE)
+}, bg.border = NA)
+highlight.sector(rownames(pooled2), track.index = 1, col = "blue", 
+    text = "Clones", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Tem_N','Trm_N', 'Tex_N'), track.index = 1, col = "green", 
+    text = "Healthy", cex = 0.8, text.col = "white", niceFacing = TRUE)
+highlight.sector(c('Tem_T', 'Trm_T', 'Tex_T'), track.index = 1, col = "red", 
+    text = "Tumour", cex = 0.8, text.col = "white", niceFacing = TRUE)
+title("Pooled Clones")
+circos.clear()
+dev.off()
+```
+
+Proprtion of shared clones in each cell type for Fig 4j
+```{r}
+ch$y <- gsub('_T', ' Colon Tumour', ch$y)
+ch$x <- gsub('_N', ' Colon Healthy', ch$x)
+
+eh$y <- gsub('_T', ' Endometrial Tumour', eh$y)
+eh$x <- gsub('_N', ' Endometrial Healthy', eh$x)
+
+lh$y <- gsub('_T', ' Lung Tumour', lh$y)
+lh$x <- gsub('_N', ' Lung Healthy', lh$x)
+
+rh$y <- gsub('_T', ' Renal Tumour', rh$y)
+rh$x <- gsub('_N', ' Renal Healthy', rh$x)
+
+hm <- rbind(ch, eh, lh, rh)
+hm <- hm[order(hm$y, partial = hm$x),]
+
+ch$prop <- ch$value/sum(ch$value)
+eh$prop <- eh$value/sum(eh$value)
+lh$prop <- lh$value/sum(lh$value)
+rh$prop <- rh$value/sum(rh$value)
+
+hm$fy <- paste(gsub(' .*', '' , gsub('CD8 ', '', hm$y)), 'Tumour')
+hm$fx <- paste(gsub(' .*', '' , gsub('CD8\\.', '', hm$x)), 'Healthy')
+hm$cy <- gsub(' Tumour', '', gsub('CD8 ... ', '', hm$y))
+hm$cx <- gsub(' Healthy', '' , gsub('CD8.... ', '', hm$x))
+
+ hm$prop <- hm$value/sum(hm$value)
+
+# Proprtion shared clones overall for Fig 4j
+ggplot(hm, aes(fx, fy, fill = prop)) +
+  geom_tile() +
+  geom_text(aes(label = value), size = 8 / .pt) +
+  scale_fill_gradient(low = "#F7FCF5", high = "#00441B") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL, y = NULL, fill = NULL) + 
+	facet_grid(vars(cy))
+```
+```{r}
+filtered <- subset(filtered, annot %in% c('CD8 Tem', 'CD8 Tex', 'CD8 Trm',  'Cycling', 'Teff', 'Temra'))
+
+write.xlsx(table(filtered$patient, filtered$annot, filtered$tissue), 'shared_cell_counts.xlsx')
+```
+
