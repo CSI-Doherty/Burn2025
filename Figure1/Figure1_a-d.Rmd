@@ -1,0 +1,48 @@
+```{r}
+library(Seurat)
+library(dplyr)
+require(RColorBrewer)
+library(ggplot2)
+```
+
+Figure 1b
+Data link = https://www.dropbox.com/sh/0b0zb0xd6ycxn0y/AAAQsL0yZ9kfAcOmwodN4QhFa?dl=0&e=1&preview=scRNAseq_longitudinal_LCMV_Arm_Cl13.Rds
+```{r fig2, fig.height = 5, fig.width = 7, fig.align = "center"}
+seu <- readRDS("downloaded/scRNAseq_longitudinal_LCMV_Arm_Cl13.rds")
+DimPlot(seu, group.by = c('sampleID'), cols = brewer.pal(n = 7, name = "Set2")) 
+DimPlot(seu, group.by = c('ClusterNames'), cols = c('maroon1','slateblue1','plum','pink','peru','navy','lightsalmon','lightgreen','goldenrod1','darkgreen','turquoise4','khaki1','maroon4','lightsteelblue1','lightpink','lightgrey','orangered','royalblue','skyblue')) 
+```
+
+Figure 1c
+```{r}
+trm16 = read.csv("mackay2016_coreSig.txt", sep = '\t')
+trm16up = trm16[trm16$Direction == 'up',c('Symbol')] 
+trm16down = trm16[trm16$Direction == 'down',c('Symbol')] 
+
+seu = AddModuleScore(seu, features = list(trm16up,trm16down), search = TRUE) 
+colnames(seu@meta.data) = recode(colnames(seu@meta.data), 'Cluster1' = 'trm16up', 'Cluster2' = 'trm16down')
+seu$trm = scale(seu$trm16up) - scale(seu$trm16down)
+
+VlnPlot(seu,features = 'trm', group.by = 'sampleID', cols =brewer.pal(n = 7, name = "Set2"), pt.size = 0.01)
+VlnPlot(seu,features = 'trm', group.by = 'ClusterNames', cols = c('maroon1','slateblue1','plum','pink','peru','navy','lightsalmon','lightgreen','goldenrod1','darkgreen','turquoise4','khaki1','maroon4','lightsteelblue1','lightpink','lightgrey','orangered','royalblue','skyblue'), pt.size = 0)
+```
+
+## Signature stats - Jan
+```{r}
+for(i in 1:6){
+  
+  print(wilcox.test(seu$trm[seu$sampleID == levels(seu$sampleID)[i]], seu$trm[seu$sampleID == levels(seu$sampleID)[i+1]]))
+}
+
+mod = lm(seu$trm~as.numeric(seu$sampleID))
+summary(mod)
+
+cor(seu$trm,as.numeric(seu$sampleID))
+```
+
+
+Figure 1d
+```{r}
+FeaturePlot(seu, features = c('trm')) + scale_colour_gradientn(colours = rev(brewer.pal(n = 10, name = "RdBu")))
+```
+

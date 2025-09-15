@@ -1,0 +1,197 @@
+---
+title: "Figure1_e-f"
+output: html_document
+date: "2025-09-15"
+---
+```{r}
+library(Seurat)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+source("~/tools/BioinfTools/Utility_Functions.R")
+seu <- readRDS("~/projects/Mackay_Breast_Cancer/output/masopust_seu.Rds")
+```
+
+```{r}
+seuA = Read10X("../data/Masopust_mouse/laneA/")
+seuB = Read10X("../data/Masopust_mouse/laneB/")
+```
+
+
+```{r}
+seuAA = CreateSeuratObject(seuA$`Gene Expression`, project = "laneA")
+seuBB = CreateSeuratObject(seuB$`Gene Expression`, project = "laneB")
+
+seuAA[["CITE"]] = CreateAssayObject(seuA$`Antibody Capture`)
+seuBB[["CITE"]] = CreateAssayObject(seuB$`Antibody Capture`)
+
+seuAA[["HTO"]] = CreateAssayObject(seuA$Custom)
+seuBB[["HTO"]] = CreateAssayObject(seuB$Custom)
+```
+
+```{r}
+seu = merge(seuAA, seuBB)
+seu$percent.mt = PercentageFeatureSet(seu, pattern = "^mt.")
+```
+Cell barcodes and unique molecular identifiers (UMIs) associated with the aligned reads were corrected and filtered. Filtered gene barcode matrices containing only barcodes with UMI counts passing the threshold for cell detection were imported to Seurat v4.0 (56). Cells with a high percentage of UMIs from mitochondrial genes (>5% of a cell’s total UMI count) and expressing <1000 genes were removed. Cells with an RNA library size between 1000 and 20,000 UMI counts and a protein library size between 100 and 2500 UMI counts were retained. Contaminating B cells (uniquely expressing high levels of Cd79a and Cd19) and macrophages (uniquely expressing high levels of Csf2ra) were removed. After contaminating cells (non-CD8+ T cells) were removed, TCR genes were removed so that they would not influence subsequent analyses (57). A list of murine TCR genes was downloaded from IMGT [The International ImMunoGeneTics Information website (www.imgt.org)] (58) and converted to gene symbols with SynGO (59). The filtered and integrated Seurat object was converted to an AnnData object for analyses with totalVI (Total Variational Inference) and scVI-tools (single-cell Variational Inference tools).
+```{r}
+VlnPlot(seu, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"))
+table(seu$orig.ident, seu$nCount_RNA > 1000 & seu$nCount_RNA < 20000)
+table(seu$orig.ident, seu$percent.mt <= 5)
+
+seu = seu[, seu$nCount_RNA >= 1000 & seu$nCount_RNA <= 20000 &
+            seu$nFeature_RNA >= 1000 &
+            seu$percent.mt <= 5 &
+            seu$nCount_CITE >= 100 & seu$nCount_CITE <= 2500]
+
+table(seu$orig.ident, seu@assays$RNA@counts["Cd19",] > 0 | seu@assays$RNA@counts["Cd79a",] > 0)
+table(seu$orig.ident, seu@assays$RNA@counts["Csf2ra",] > 0 )
+
+seu = seu[, seu@assays$RNA@counts["Cd19",] == 0 & seu@assays$RNA@counts["Cd79a",] == 0 & seu@assays$RNA@counts["Csf2ra",] == 0]
+```
+
+```{r}
+seu <- NormalizeData(seu, normalization.method = "CLR", margin = 1, assay = "HTO")
+seu = HTODemux(seu, assay = "HTO")
+
+table(seu$orig.ident, seu$hash.ID)
+
+seu = seu[,seu$hash.ID %in% c("SPL", "TUMOR", "MFP")]
+```
+
+
+```{r}
+seu = NormalizeData(seu)
+seu = FindVariableFeatures(seu)
+seu = ScaleData(seu)
+
+varfeatures = seu@assays$RNA@var.features
+varfeatures = varfeatures[!grepl("Tr", varfeatures)]
+
+seu = RunPCA(seu, features = varfeatures, verbose = F)
+```
+
+```{r}
+seu <- NormalizeData(seu, normalization.method = "CLR", margin = 2, assay = "CITE")
+VariableFeatures(seu, assay = "CITE") = row.names(seu@assays$CITE)
+seu = ScaleData(seu, assay = "CITE")
+seu = RunPCA(seu, assay = "CITE", reduction.name = "apca")
+
+seu = FindMultiModalNeighbors(
+  seu, reduction.list = list("pca", "apca"), 
+  dims.list = list(1:25, 1:10), modality.weight.name = "RNA.weight"
+)
+```
+```{r}
+seu <- RunUMAP(seu, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+seu <- FindClusters(seu, graph.name = "wsnn", algorithm = 3, resolution = 1, verbose = FALSE)
+
+DimPlot(seu, group.by = "orig.ident")
+## OT-I and P14 only
+```{r}
+RidgePlot(seu, features = c("OTI", "P14"), group.by = "orig.ident")
+
+summary(seu@assays$CITE@data["OTI",] > 0.4)
+summary(seu@assays$CITE@data["P14",] > 0.4)
+filt = seu[, seu@assays$CITE@data["OTI",] > 0.4 |
+            seu@assays$CITE@data["P14",] > 0.4]
+```
+
+```{r}
+filt = NormalizeData(filt)
+filt = FindVariableFeatures(filt)
+# tum = ScaleData(tum, vars.to.regress = "percent.ribo")
+filt = ScaleData(filt)
+
+varfeatures = filt@assays$RNA@var.features
+varfeatures = varfeatures[!grepl("Tr", varfeatures) & !grepl("^Rp", varfeatures)]
+
+filt = RunPCA(filt, features = varfeatures, verbose = F)
+
+filt <- NormalizeData(filt, normalization.method = "CLR", margin = 2, assay = "CITE")
+VariableFeatures(filt, assay = "CITE") = row.names(filt@assays$CITE)
+filt = ScaleData(filt, assay = "CITE")
+filt = RunPCA(filt, assay = "CITE", reduction.name = "apca")
+
+filt = FindMultiModalNeighbors(
+  filt, reduction.list = list("pca", "apca"), 
+  dims.list = list(1:20, 1:8), modality.weight.name = "RNA.weight"
+)
+
+filt <- RunUMAP(filt, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+filt <- FindClusters(filt, graph.name = "wsnn", algorithm = 3, resolution = 1, verbose = FALSE)
+
+FeaturePlot(filt, features = c("P14", "OTI"))
+```
+```{r}
+filt$type = case_when(filt@assays$CITE@data["OTI",] < 0.4 ~ "P14",
+                      filt@assays$CITE@data["P14",] < 0.4 ~ "OTI",
+                      .default = "double")
+
+filt = filt[, filt$type != "double"]
+
+DimPlot(filt, group.by = "type")
+```
+```{r}
+filt$group = paste(filt$hash.ID, filt$type)
+
+DimPlot(filt, group.by = "group", label = T) -> p;p
+
+ggsave(p, filename = "../plots/masopust_groups.pdf", width = 15, height = 11, units = "cm")
+```
+
+
+### Mackay Core
+```{r}
+ml2016 = read.table("../data/mackay2016_coreSig.txt", header=T)
+
+filt = AddSignature(filt, genes = ml2016$Symbol[ml2016$Direction == "up"], name = "Mackay2016_up")
+filt = AddSignature(filt, genes = ml2016$Symbol[ml2016$Direction == "down"], name = "Mackay2016_dn")
+
+ggarrange(plots = list(plotto_signature_scoring_plot("Mackay2016_up", filt, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Mackay2016_dn", filt, reduction = "wnn.umap")))
+
+filt$Mackay2016 = scale(filt$Mackay2016_up) - scale(filt$Mackay2016_dn)
+
+
+
+# plotto_signature_scoring_plot("Mackay2016", filt, reduction = "wnn.umap") + 
+#   theme(legend.position = "right", legend.key.width = unit(0.2, "cm"),
+#         legend.key.height = unit(0.75,"cm")) -> p
+# ggsave(p, filename = "../plots/masopust_2016coresig.pdf", width = 10, height = 7.5, units = "cm")
+```
+
+
+```{r}
+f = filt[, filt$group!= "MFP OTI"]
+f$group = factor(f$group)
+f$group = factor(f$group, levels = c("SPL OTI", "SPL P14", "TUMOR P14", "MFP P14", "TUMOR OTI"))
+VlnPlot( f , "Mackay2016", group.by = "group") -> p
+
+f@meta.data %>% as_tibble()%>%
+  ggplot(aes(group, Mackay2016)) +
+  geom_violin(aes(fill = group), show.legend = T) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_classic() +
+  theme(axis.text.x = element_blank()) +
+  labs(x = element_blank(), y = "TRM module score") -> p;p
+
+ggsave(p, filename = "../plots/masopust_core_violin.pdf", width = 15, height = 10, units = "cm")
+```
+## TRM Masopust statistics
+```{r}
+cor(as.numeric(f$group), f$Mackay2016)
+mod = lm(f$Mackay2016~as.numeric(f$group))
+summary(mod)
+
+for(i in 1:4){
+  
+  print(wilcox.test(f$Mackay2016[f$group == "TUMOR OTI"], f$Mackay2016[f$group == levels(f$group)[i]]))
+}
+
+for(i in 1:4){
+  
+  print(wilcox.test(f$Mackay2016[f$group == levels(f$group)[i]], f$Mackay2016[f$group == levels(f$group)[i+1]]))
+}
+
+kruskal.test(f$Mackay2016~f$group)
+
+```

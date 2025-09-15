@@ -3,8 +3,11 @@
 ## Figures to be placed in here:
 
 Figure 1:
-- Justine: 1b, 1c, d
-- Jan: 1e, 1f, 1j, 1k, 1l, 1m, 1n, 1o?
+- Justine: 1b, 1c, d - DONE
+- Jan: 1e, 1f - DONE
+	 1j, 1k, 1l, 1m - ShinyCell
+	1n - DONE 
+	1o - Tom
 
 Figure 2:
 - nil
