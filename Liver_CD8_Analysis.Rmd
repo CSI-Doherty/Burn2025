@@ -1,0 +1,367 @@
+---
+title: "02_Liver_CD8s"
+author: "jibsch"
+date: "2022-08-31"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r}
+library(Seurat)
+library(tidyverse)
+library(RColorBrewer)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+```
+
+
+
+```{r}
+FetchData(seu_filtered_A_B_C_SCT_RNA, vars = c("Hu.CD4-RPA.T4", "Hu.CD8")) %>% mutate(CD4 = `cite_Hu.CD4-RPA.T4`>1, CD8 = cite_Hu.CD8>1) %>% group_by(CD4, CD8) -> x
+
+seu_cd8s = seu_filtered_A_B_C_SCT_RNA[,x$CD8 & !x$CD4 & !seu_filtered_A_B_C_SCT_RNA$Tissue %in% c("Doublet", "Unassigned")]
+```
+
+```{r}
+seu_cd8s = SCTransform(seu_cd8s)
+
+
+features = seu_cd8s@assays$SCT@var.features
+features = features[!grepl("TR[AB]", features) & !grepl("^MT-", features)]
+
+seu_cd8s = RunPCA(seu_cd8s, features = features, verbose = F)
+
+DefaultAssay(seu_cd8s) <- 'CITE'
+# we will use all ADT features for dimensional reduction
+# we set a dimensional reduction name to avoid overwriting the 
+VariableFeatures(seu_cd8s) <- rownames(seu_cd8s[["CITE"]])
+seu_cd8s <- NormalizeData(seu_cd8s, normalization.method = 'CLR', margin = 2) %>% 
+  ScaleData() %>% RunPCA(reduction.name = 'apca')
+
+DefaultAssay(seu_cd8s) <- 'SCT'
+seu_cd8s <- FindMultiModalNeighbors(
+  seu_cd8s, reduction.list = list("pca", "apca"), 
+  dims.list = list(1:25, 1:18), modality.weight.name = "RNA.weight"
+)
+
+seu_cd8s <- RunUMAP(seu_cd8s, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+seu_cd8s <- FindClusters(seu_cd8s, graph.name = "wsnn", algorithm = 3, resolution = 1, verbose = FALSE)
+
+```
+```{r}
+DimPlot(seu_cd8s, label = T, reduction = "wnn.umap")
+FeaturePlot(seu_cd8s, features = c("Hu.CD103", "Hu.CD49a", "CXCR6"), reduction = "wnn.umap")
+FeaturePlot(seu_cd8s, features = c("PDCD1", "HAVCR2", "LAG3", "TIGIT"), reduction = "wnn.umap")
+
+VlnPlot(seu_cd8s, features = c("PDCD1", "HAVCR2", "LAG3", "TIGIT"),  ncol = 2)
+```
+```{r}
+markers = FindAllMarkers(seu_cd8s, only.pos = F)
+
+markers %>% filter(gene %in% c("ITGAE", "ITGA1", "CXCR6", "TOX", "LAG3", "PDCD1", "HAVCR2", "TIGIT" ,"EOMES", "SELL"))
+```
+
+```{r}
+seu_cd8s@meta.data %>% as_tibble() %>%
+  group_by(seurat_clusters) %>% mutate(tot= n()) %>%
+  group_by(seurat_clusters, Tissue) %>% summarise(f = n()/tot[1]) %>%
+  group_by(seurat_clusters) %>% mutate(order = f[1]) %>%
+  ggplot(aes(reorder(seurat_clusters,order), f)) +
+  geom_bar(stat="identity", aes(fill = Tissue)) +
+  theme_classic() +
+  scale_fill_brewer() +
+  labs(y = "% cells in cluster", x = "cluster")
+```
+## Signatures
+```{r}
+sigs = read.table("~/projects/Lewinlab_AMC_local/data/genes_signatures.txt", sep="\t")
+sigs = split(sigs$V1, sigs$V2)
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = sigs)
+names(seu_cd8s@meta.data)[20:26] = names(sigs)
+ggarrange(plots = lapply(as.list(names(sigs)), function(x) plotto_signature_scoring_plot(x, seu_cd8s, reduction = "wnn.umap")))
+```
+```{r}
+naive = list(plus = c("SELL", "TCF7", "CCR7", "IL17RA", "S1PR1", "KLF2"),
+             minus = c("KLRG1","CX3CR1","S1PR5","TNF","IFNG","GZMB","PRF1","MKI67","PDCD1", "HAVCR2", "CTLA4"))
+seu_cd8s = AddModuleScore(seu_cd8s, features = naive)
+names(seu_cd8s@meta.data)[names(seu_cd8s@meta.data) == c("Cluster1", "Cluster2")] = c("Naive_pos", "Naive_neg")
+# merged3$Naive_neg = -merged3$Naive_neg
+seu_cd8s$Naive = scale(seu_cd8s$Naive_pos) - scale(seu_cd8s$Naive_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Naive_pos", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Naive_neg", seu_cd8s, size =1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Naive", seu_cd8s, size =1, reduction = "wnn.umap")), nrow = 1)
+```
+```{r}
+effector = list(plus =c("KLRG1", "CX3CR1", "S1PR5", "TNF", "IFNG", "GZMB", "PRF1"),
+                neg = c("SELL", "TCF7", "LEF1", "CCR7", "IL17RA"))
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = effector)
+names(seu_cd8s@meta.data)[c(length(names(seu_cd8s@meta.data)) -1, length(names(seu_cd8s@meta.data)))] = c("Effector_pos", "Effector_neg")
+seu_cd8s$Effector = scale(seu_cd8s$Effector_pos) - scale(seu_cd8s$Effector_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Effector_pos", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Effector_neg", seu_cd8s, size =1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Effector", seu_cd8s, size =1, reduction = "wnn.umap")), nrow = 1)
+```
+```{r}
+exhausted = list(plus = c("PDCD1", "HAVCR2", "LAG3", "TIGIT"),
+                 minus = c("SELL", "TCF7", "CCR7", "IL17RA", "S1PR1",  "KLF2"))
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = exhausted)
+names(seu_cd8s@meta.data)[c(length(names(seu_cd8s@meta.data)) -1, length(names(seu_cd8s@meta.data)))] = c("Exhausted_pos", "Exhausted_neg")
+seu_cd8s$Exhausted = scale(seu_cd8s$Exhausted_pos) - scale(seu_cd8s$Exhausted_neg)
+ggarrange(plots = list(plotto_signature_scoring_plot("Exhausted_pos", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Exhausted_neg", seu_cd8s, size =1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("Exhausted", seu_cd8s, size =1, reduction = "wnn.umap")), nrow = 1)
+```
+
+```{r}
+ifn_stim = list(plus = c("BST2", "IRF1", "IRF2", "IRF7", "STAT1", "STAT2", "MX1"))
+seu_cd8s = AddModuleScore(seu_cd8s, features = ifn_stim)
+names(seu_cd8s@meta.data)[length(names(seu_cd8s@meta.data))] = "IFN_stimulated"
+
+plotto_signature_scoring_plot("IFN_stimulated", seu_cd8s, size =1, reduction = "wnn.umap")
+```
+
+
+## Refining TRM Signature
+```{r}
+mark_trm = markers[markers$cluster == 10,]
+mark_tum = markers[markers$cluster %in% c(9,235),]
+
+limma::vennDiagram(data.frame(TRM = rownames(seu_cd8s) %in% mark_trm$gene,
+                              Ex_TRM = rownames(seu_cd8s) %in% mark_tum$gene))
+
+diff = FindMarkers(seu_cd8s, ident.1 = 10, ident.2 = c(9,23))
+```
+
+```{r}
+
+limma::vennDiagram(data.frame(TRM = rownames(seu_cd8s) %in% mark_trm$gene,
+                              TRM_vs_tum_up = rownames(seu_cd8s) %in% rownames(diff)[diff$avg_log2FC > 0 & rownames(diff) %in% mark_trm$gene[mark_trm$avg_log2FC > 0] &
+                                                                                   diff$pct.2 <= 0.1] ,
+                              TRM_vs_tum_dn = rownames(seu_cd8s) %in% rownames(diff)[diff$avg_log2FC < 0 & rownames(diff) %in% mark_trm$gene[mark_trm$avg_log2FC < 0] &
+                                                                                   diff$pct.1 <= 0.1]))
+
+TRM_sig5 = mark_trm[mark_trm$gene %in% rownames(diff)[diff$avg_log2FC > 0 & rownames(diff) %in% mark_trm$gene[mark_trm$avg_log2FC > 0] & diff$pct.2 <= 0.1] |
+                                              mark_trm$gene %in%         rownames(diff)[diff$avg_log2FC < 0 & rownames(diff) %in% mark_trm$gene[mark_trm$avg_log2FC < 0] &
+                                                                                   diff$pct.1 <= 0.1],]
+
+TRM_sig2 = mark_trm[!mark_trm$gene %in% mark_tum$gene,]
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(trm = TRM_sig2$gene[TRM_sig2$avg_log2FC > 0]))
+names(seu_cd8s@meta.data)[names(seu_cd8s@meta.data) == "Cluster1"] = "TRM2"
+plotto_signature_scoring_plot("TRM2", seu_cd8s, size = 1, reduction = "wnn.umap")
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(trm = TRM_sig2$gene[TRM_sig2$avg_log2FC < 0]))
+names(seu_cd8s@meta.data)[names(seu_cd8s@meta.data) == "Cluster1"] = "TRM2_down"
+
+seu_cd8s$TRM_complete = scale(seu_cd8s$TRM2) - scale(seu_cd8s$TRM2_down)
+
+plotto_signature_scoring_plot("TRM_complete", seu_cd8s, size = 1, reduction = "wnn.umap")
+
+ps = lapply(list("TRM5", "TRM5_down", "TRM_complete"), function(x) plotto_signature_scoring_plot(x, seu_cd8s, size = 1))
+plotto_panel_it(ps, nrow = 1, width = 5, height = 5)
+
+write.csv(TRM_sig2, quote = F, file = "../output/TRM_sig2_cd8.csv")
+```
+
+
+
+## Ali Signatures
+```{r}
+library(openxlsx)
+cd8_trm = readWorkbook("~/projects/Mackay_Liver_Ali/analysis/output/DEGs_integrated.xlsx", sheet = 6)
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(up = cd8_trm$gene[cd8_trm$logFC > 0],
+                                                    dn = cd8_trm$gene[cd8_trm$logFC < 0]))
+names(seu_cd8s@meta.data)[c((length(names(seu_cd8s@meta.data)) -1): length(names(seu_cd8s@meta.data)))] = 
+  c("TRM_Ali_CD8_up", "TRM_Ali_CD8_dn")
+
+ggarrange(plots = list(plotto_signature_scoring_plot("TRM_Ali_CD8_up", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("TRM_Ali_CD8_dn", seu_cd8s, size = 1, reduction = "wnn.umap")), nrow = 1)
+```
+
+```{r}
+cd8_trm_17 = readWorkbook("~/projects/Mackay_Liver_Ali/analysis/output/DEGs_integrated.xlsx", sheet = 7)
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(up = cd8_trm_17$gene[cd8_trm_17$logFC > 0],
+                                                    dn = cd8_trm_17$gene[cd8_trm_17$logFC < 0]))
+names(seu_cd8s@meta.data)[c((length(names(seu_cd8s@meta.data)) -1): length(names(seu_cd8s@meta.data)))] = 
+  c("TRM_Ali_CD8_17_up", "TRM_Ali_CD8_17_dn")
+
+ggarrange(plots = list(plotto_signature_scoring_plot("TRM_Ali_CD8_17_up", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("TRM_Ali_CD8_17_dn", seu_cd8s, size = 1, reduction = "wnn.umap")), nrow = 1)
+```
+
+```{r}
+cd8_trm_GNLY = readWorkbook("~/projects/Mackay_Liver_Ali/analysis/output/DEGs_integrated.xlsx", sheet = 8)
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(up = cd8_trm_GNLY$gene[cd8_trm_GNLY$logFC > 0],
+                                                    dn = cd8_trm_GNLY$gene[cd8_trm_GNLY$logFC < 0]))
+names(seu_cd8s@meta.data)[c((length(names(seu_cd8s@meta.data)) -1): length(names(seu_cd8s@meta.data)))] = 
+  c("TRM_Ali_CD8_GNLY_up", "TRM_Ali_CD8_GNLY_dn")
+
+ggarrange(plots = list(plotto_signature_scoring_plot("TRM_Ali_CD8_GNLY_up", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("TRM_Ali_CD8_GNLY_dn", seu_cd8s, size = 1, reduction = "wnn.umap")), nrow = 1)
+```
+
+```{r}
+cd8_trm_KLRB1 = readWorkbook("~/projects/Mackay_Liver_Ali/analysis/output/DEGs_integrated.xlsx", sheet = 9)
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(up = cd8_trm_KLRB1$gene[cd8_trm_KLRB1$logFC > 0],
+                                                    dn = cd8_trm_KLRB1$gene[cd8_trm_KLRB1$logFC < 0]))
+names(seu_cd8s@meta.data)[c((length(names(seu_cd8s@meta.data)) -1): length(names(seu_cd8s@meta.data)))] = 
+  c("TRM_Ali_CD8_KLRB1_up", "TRM_Ali_CD8_KLRB1_dn")
+
+ggarrange(plots = list(plotto_signature_scoring_plot("TRM_Ali_CD8_KLRB1_up", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("TRM_Ali_CD8_KLRB1_dn", seu_cd8s, size = 1, reduction = "wnn.umap")), nrow = 1)
+```
+
+```{r}
+cd8_trm_KLRG1 = readWorkbook("~/projects/Mackay_Liver_Ali/analysis/output/DEGs_integrated.xlsx", sheet = 10)
+
+seu_cd8s = AddModuleScore(seu_cd8s, features = list(up = cd8_trm_KLRG1$gene[cd8_trm_KLRG1$logFC > 0],
+                                                    dn = cd8_trm_KLRG1$gene[cd8_trm_KLRG1$logFC < 0]))
+names(seu_cd8s@meta.data)[c((length(names(seu_cd8s@meta.data)) -1): length(names(seu_cd8s@meta.data)))] = 
+  c("TRM_Ali_CD8_KLRG1_up", "TRM_Ali_CD8_KLRG1_dn")
+
+ggarrange(plots = list(plotto_signature_scoring_plot("TRM_Ali_CD8_KLRG1_up", seu_cd8s, size = 1, reduction = "wnn.umap"),
+                       plotto_signature_scoring_plot("TRM_Ali_CD8_KLRG1_dn", seu_cd8s, size = 1, reduction = "wnn.umap")), nrow = 1)
+```
+
+
+## Monocle3
+```{r}
+library(monocle3)
+library(SeuratWrappers)
+
+x = seu_cd8s
+x@reductions$umap = x@reductions$wnn.umap.harmony
+
+cds <- as.cell_data_set(x)
+
+cds <- cluster_cells(cds, resolution=1e-3)
+
+p1 <- plot_cells(cds, color_cells_by = "cluster", show_trajectory_graph = FALSE)
+p2 <- plot_cells(cds, color_cells_by = "donor_id", show_trajectory_graph = FALSE)
+p1 + p2
+```
+```{r}
+cds <- learn_graph(cds, use_partition = FALSE, verbose = FALSE)
+
+plot_cells(cds,
+           color_cells_by = "cluster",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE)
+```
+```{r}
+cds <- order_cells(cds)
+
+pdf("~/projects/Mackay_Breast_Cancer/plots/monocle_liver.pdf")
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           group_cells_by = "cluster",
+           label_cell_groups = FALSE,
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=FALSE,
+           label_roots = FALSE,
+           trajectory_graph_color = "grey60")
+dev.off()
+```
+
+```{r}
+seu_cd8s$pseudotime = pseudotime(cds)
+
+
+plotto_signature_scoring_plot("pseudotime", seu_cd8s, size = 1, reduction = "wnn.umap.harmony")
+```
+## Slinghsot
+```{r}
+library(slingshot)
+sce = as.SingleCellExperiment(seu_cd8s )
+
+sce2 <- slingshot(sce, clusterLabels = 'CellType_major', reducedDim = 'WNN.UMAP.HARMONY', start.clus = "TEMRA")
+```
+```{r}
+summary(sce2$slingPseudotime_1)
+
+library(grDevices)
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce2$slingPseudotime_1, breaks=100)]
+
+
+plot(reducedDims(sce2)$WNN.UMAP.HARMONY, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce2), lwd=2, col='black')
+```
+```{r}
+pseudo = as.data.frame(cbind(sce2$slingPseudotime_1, sce2$slingPseudotime_2, sce2$slingPseudotime_3))
+
+pseudo$row = 1:8707
+pseudo %>% as_tibble() %>% 
+  pivot_longer(-row) %>%
+  group_by(row) %>% summarise(m = mean(value, na.rm = TRUE)) -> x
+sce2$slingPseudotime_combined = x$m
+
+plotcol <- colors[cut(sce2$slingPseudotime_combined, breaks=100)]
+
+pdf("../../Mackay_Breast_Cancer/plots/slingshot_liver.pdf")
+plot(reducedDims(sce2)$WNN.UMAP.HARMONY, col = plotcol, pch=16, asp = 1)
+lines(SlingshotDataSet(sce2), lwd=2, col='black')
+dev.off()
+```
+## Celltypes
+
+```{r}
+seu_cd8s$celltype = recode(seu_cd8s$seurat_clusters,
+                           "9" = "CD103_TEX_Tum", "23" = "CD103_TEX_Tum",
+                           "10" = "CD103_TRM_Dist",
+                           "0" = "CD103_TRM_Dist/Tum", 
+                           "4" = "TEMRA_Dist", "13" = "TEMRA_Dist",
+                           "5" = "MAIT_Cells", "7" = "MAIT_Cells", "12" = "MAIT_Cells", "16" = "MAIT_Cells", 
+                           "1" = "TEM_Dist/Tum", "21" = "TEM_Dist/Tum", "15" = "TEM_Dist/Tum", "24" = "TEM_Dist/Tum",
+                           "6" = "TCM",
+                           "19" = "Naive",
+                           "11" = "Blood TEMRA", "22" = "Blood TEMRA",
+                           "3" = "TRM Healthy 2",
+                           "2" = "TRM Healthy 1",
+                           "8" = "TEM Healthy", 
+                           "14" = "TEM Dist",
+                           "17" = "GDT cells", "18" = "GDT cells", "20" = "GDT cells")
+
+DimPlot(seu_cd8s, group.by = "celltype", label = T, reduction = "wnn.umap")
+```
+
+```{r}
+seu_cd8s@active.ident = factor(seu_cd8s$celltype)
+markers = FindAllMarkers(seu_cd8s, only.pos = F)
+
+write.csv(markers, "../output/markers_cd8s_celltypes.csv", quote = F)
+```
+
+
+## Shiny App
+
+```{r}
+library(ShinyCell)
+
+seu_cd8s@assays$SCT@data = rbind(seu_cd8s@assays$SCT@data, seu_cd8s@assays$CITE@data)
+
+scConf = createConfig(seu_cd8s)
+
+makeShinyApp(seu_cd8s, scConf, gene.mapping = TRUE, gex.assay = "SCT",shiny.dir = "Liver_CD8_Shiny",
+             shiny.title = "Liver Cancer CD8 T Cells", default.dimred = "wnn.umap") 
+```
+
+
+## Harmony
+```{r}
+library(harmony)
+
+seu_cd8s = RunHarmony(seu_cd8s, group.by.vars = "Donor", reduction = "pca", assay.use = "SCT", reduction.save = "harmony")
+
+seu_cd8s = RunUMAP(seu_cd8s, reduction = "harmony", reduction.name = "harmony.umap", dims = 1:25)
+```
+

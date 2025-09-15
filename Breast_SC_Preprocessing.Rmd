@@ -1,0 +1,382 @@
+---
+title: "10_preprocessing_final"
+author: "jibsch"
+date: "2023-06-01"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+
+
+## Load Libraries 
+
+```{r message=FALSE, error=FALSE}
+library(Seurat)
+library(tidyverse)
+library(ggpubr)
+```
+
+We'll load the libraries one by one and do some QC to see how things shake out:
+
+## Lib B
+
+```{r error=FALSE}
+lib_B = Read10X("~/projects/Mackay_Breast_Cancer/data/CITE-GEX-B/outs/filtered_feature_bc_matrix/")
+
+seu_b = CreateSeuratObject(lib_B$`Gene Expression`, project = "Lane B")
+
+# create a new assay to store ADT information
+adt_assay <- CreateAssayObject(counts = lib_B$`Antibody Capture`)
+
+# add this assay to the previously created Seurat object
+seu_b[["ADT"]] <- adt_assay
+
+# Validate that the object now contains multiple assays
+Assays(seu_b)
+```
+
+First we look at the standard features of reads/genes per cell, mitochindrial contents and antibody counts:
+```{r}
+seu_b$percent.mt = PercentageFeatureSet(seu_b, pattern = "^MT-")
+VlnPlot(seu_b, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "nCount_ADT", "nFeature_ADT"))
+```
+This is looking healthy.
+
+Let's look at the critical variables more closely to identity thresholds for cell filtering:
+
+```{r}
+
+seu_b@meta.data %>% as_tibble() %>%
+  filter(percent.mt < 25) %>%
+  ggdensity(x = "percent.mt" ) +
+  geom_vline(xintercept = 5, linetype="dashed", colour = "red")
+
+seu_b@meta.data %>% as_tibble() %>%
+  ggdensity(x = "nFeature_RNA" ) +
+  geom_vline(xintercept = 500, linetype="dashed", colour = "red")
+
+seu_b = seu_b[, seu_b$percent.mt <= 5 & seu_b$nFeature_RNA >= 500 ]
+```
+
+```{r eval=FALSE}
+data.frame(x = row.names(seu_b@meta.data)) %>%
+  write.table(quote = F, row.names = F, col.names = F, file = "~/projects/Mackay_Breast_Cancer/data/CITE-GEX-B/outs/whitelist.txt")
+```
+
+In the backend we use the now identified cells for genotype demultiplexing.
+
+We load this results here to integrate into the data and furhter the QC as well:
+
+```{r}
+don = read_tsv("~/projects/Mackay_Breast_Cancer/data/CITE-GEX-B/outs/vireo_possorted_genome_filtered.bam/donor_ids.tsv")
+
+seu_b@meta.data %>% as_tibble(rownames = "cell") %>%
+  left_join(don) -> don
+
+seu_b$donor_id = don$donor_id
+
+
+table(seu_b$donor_id)
+```
+
+The TCR data gets combined with the donor data to better understand this assay.
+First, we load the TCR data and then break down some stats for each number of TCR chains a cell may present.
+
+
+```{r}
+tcr = read.csv("~/projects/Mackay_Breast_Cancer/data/TCR-B/outs/filtered_contig_annotations.csv")
+
+tcr %>% filter(productive == "true") %>% 
+  inner_join(don, by = c("barcode" = "cell")) %>% 
+  filter(donor_id != "unassigned") %>%
+  group_by(barcode) %>%
+  summarise(n = n(), u = min(umis), a=sum(chain == "TRA"), b = sum(chain == "TRB"), d = donor_id[1]) %>% 
+  group_by(n, a, b) %>% summarise(f = n(), u = mean(u), a=mean(a), b = mean(b), doublets = sum(d == "doublet")/n()*100) %>%
+  rename("# chains per cell" = n, "# alpha chains" = a, "# beta chains" = b, 
+         "# cells with conf." = f, "ave(min chain umis)" = u, "% doublets" = doublets)
+```
+1. There is a heavy bias towards having a beta chain and no alpha chain for cells that have only one chain (>90% of the time). It is unclear whether this is a biological effect, or a sequencing/technical effect that allows for better retrieval of the beta chains.
+
+2. Most cells are balanced with one alpha and beta.
+
+3. If cells have 3 chains, then this would be alpha-alpha-beta in most cases (>60%). This constellation makes sense. The reverse (alpha-beta-beta), however, is not biologically plausible and this is paired with a sharp rise in confirmed doublets (>48%). Since there is plenty of opportunity to have cell doublets within the same donor (see the number of cells in donor3 above), I'd be inclined to scrap all cells in this constellation. Alternatively, we could scrap only confirmed doublets and keep only the highest evidence beta chain (note the decline in evidence here as well).
+
+4. The configuration of 2 alpha and beta chains per cell is paired with a very high doublet rate, and we will remove all of such cell combinations (alternatively, could remove the lowest beta chain again, however, it does not affect cell numbers that much).
+
+
+```{r}
+tcr %>% filter(productive == "true") %>% 
+  group_by(barcode) %>%
+  filter( sum(chain == "TRB") >= 2) -> tcr_filt
+  
+tcr %>%
+  select(barcode, chain, v_gene, j_gene, c_gene, cdr3, cdr3_nt, umis, raw_consensus_id) %>%
+  mutate(p = paste(v_gene,  j_gene, c_gene, sep = "_")) %>%
+  group_by(barcode, chain) %>%
+  arrange(-umis) %>%
+  summarise(comb = p[1], chain = chain[1], cdr3 = cdr3[1], cdr3_nt = cdr3_nt[1]) %>%  
+  pivot_wider(id_cols = c(barcode), names_from = chain, values_from = c(comb, cdr3, cdr3_nt)) -> tcr_chains
+
+seu_b@meta.data %>% as_tibble(rownames = "barcode") %>%
+  left_join(tcr_chains) -> x
+
+seu_b@meta.data = cbind(seu_b@meta.data, x[,9:14])
+```
+
+The final filtering will exclude cells that are doublets, unassigned, or have more than two beta chains:
+```{r}
+summary(seu_b$donor_id %in% c("unassigned", "doublet") | rownames(seu_b@meta.data) %in% tcr_filt$barcode)
+
+```
+It is a very good number |..|
+The devil take those cells!
+
+ 
+
+```{r eval=FALSE}
+seu_b = seu_b[, !seu_b$donor_id %in% c("unassigned", "doublet") &
+                !rownames(seu_b@meta.data) %in% tcr_filt$barcode]
+seu_b = SCTransform(seu_b)
+seu_b = RunPCA(seu_b, verbose = F)
+ElbowPlot(seu_b)
+seu_b = RunUMAP(seu_b, dims = 1:30)
+```
+
+
+```{r eval=F}
+# Note that the following command is an alternative but returns the same result
+seu_b <- NormalizeData(seu_b, normalization.method = "CLR", margin = 2, assay = "ADT")
+
+# Now, we will visualize CD14 levels for RNA and protein By setting the default assay, we can
+# visualize one or the other
+DefaultAssay(seu_b) <- "ADT"
+p1 <- FeaturePlot(seu_b, "Hu.CD8", cols = c("lightgrey", "darkgreen")) + ggtitle("CD8 protein")
+DefaultAssay(seu_b) <- "SCT"
+p2 <- FeaturePlot(seu_b, "CD8A") + ggtitle("CD8 RNA")
+
+saveRDS(seu_b, "../output/seu_b.Rds")
+```
+
+
+
+
+After this, we repeat the same process for libraries A and C. 
+
+We will see that the numbers are very, very comparable - well done on the library prep!
+
+I won't comment on any of it, hopefully it becomes clear by the above guidance. 
+
+
+
+## Lib A
+
+```{r}
+lib_A = Read10X("~/projects/Mackay_Breast_Cancer/data/CITE-GEX-A/outs/filtered_feature_bc_matrix/")
+
+seu_a = CreateSeuratObject(lib_A$`Gene Expression`, project = "Lane A")
+
+# create a new assay to store ADT information
+adt_assay <- CreateAssayObject(counts = lib_A$`Antibody Capture`)
+
+# add this assay to the previously created Seurat object
+seu_a[["ADT"]] <- adt_assay
+
+```
+
+
+```{r}
+seu_a$percent.mt = PercentageFeatureSet(seu_a, pattern = "^MT-")
+VlnPlot(seu_a, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "nCount_ADT", "nFeature_ADT"))
+```
+```{r}
+seu_a@meta.data %>% as_tibble() %>%
+  filter(percent.mt < 25) %>%
+  ggdensity(x = "percent.mt" ) +
+  geom_vline(xintercept = 5, linetype="dashed", colour = "red")
+
+seu_a@meta.data %>% as_tibble() %>%
+  ggdensity(x = "nFeature_RNA" ) +
+  geom_vline(xintercept = 500, linetype="dashed", colour = "red")
+
+seu_a = seu_a[, seu_a$percent.mt <= 5 & seu_a$nFeature_RNA >= 500 ]
+```
+
+```{r eval=FALSE}
+data.frame(x = row.names(seu_a@meta.data)) %>%
+  write.table(quote = F, row.names = F, col.names = F, file = "~/projects/Mackay_Breast_Cancer/CITE-GEX-A/outs/whitelist.txt")
+```
+
+```{r}
+don = read_tsv("~/projects/Mackay_Breast_Cancer/data/CITE-GEX-A/outs/vireo_possorted_genome_filtered.bam/donor_ids.tsv")
+
+seu_a@meta.data %>% as_tibble(rownames = "cell") %>%
+  left_join(don) -> don
+
+seu_a$donor_id = don$donor_id
+
+
+table(seu_a$donor_id)
+```
+
+
+```{r}
+tcr = read.csv("~/projects/Mackay_Breast_Cancer/data/TCR-A/outs/filtered_contig_annotations.csv")
+
+tcr %>% filter(productive == "true") %>% 
+  inner_join(don, by = c("barcode" = "cell")) %>% 
+  filter(donor_id != "unassigned") %>%
+  group_by(barcode) %>%
+  summarise(n = n(), u = min(umis), a=sum(chain == "TRA"), b = sum(chain == "TRB"), d = donor_id[1]) %>% 
+  group_by(n, a, b) %>% summarise(f = n(), u = mean(u), a=mean(a), b = mean(b), doublets = sum(d == "doublet")/n()*100) %>%
+  rename("# chains per cell" = n, "# alpha chains" = a, "# beta chains" = b, 
+         "# cells with conf." = f, "ave(min chain umis)" = u, "% doublets" = doublets)
+```
+
+```{r}
+tcr %>% filter(productive == "true") %>% 
+  group_by(barcode) %>%
+  filter( sum(chain == "TRB") >= 2) -> tcr_filt
+  
+tcr %>%
+  select(barcode, chain, v_gene, j_gene, c_gene, cdr3, cdr3_nt, umis, raw_consensus_id) %>%
+  mutate(p = paste(v_gene,  j_gene, c_gene, sep = "_")) %>%
+  group_by(barcode, chain) %>%
+  arrange(-umis) %>%
+  summarise(comb = p[1], chain = chain[1], cdr3 = cdr3[1], cdr3_nt = cdr3_nt[1]) %>%  
+  pivot_wider(id_cols = c(barcode), names_from = chain, values_from = c(comb, cdr3, cdr3_nt)) -> tcr_chains
+
+seu_a@meta.data %>% as_tibble(rownames = "barcode") %>%
+  left_join(tcr_chains) -> x
+
+seu_a@meta.data = cbind(seu_a@meta.data, x[,9:14])
+```
+
+
+```{r}
+summary(seu_a$donor_id %in% c("unassigned", "doublet") | rownames(seu_a@meta.data) %in% tcr_filt$barcode)
+
+```
+
+```{r eval=FALSE}
+seu_a = seu_a[, !seu_a$donor_id %in% c("unassigned", "doublet") &
+                !rownames(seu_a@meta.data) %in% tcr_filt$barcode]
+seu_a = SCTransform(seu_a)
+seu_a = RunPCA(seu_a, verbose = F)
+ElbowPlot(seu_a)
+seu_a = RunUMAP(seu_a, dims = 1:30)
+
+seu_a <- NormalizeData(seu_a, normalization.method = "CLR", margin = 2, assay = "ADT")
+
+
+saveRDS(seu_a, "~/projects/Mackay_Breast_Cancer/output/seu_a.Rds")
+```
+## Lib C
+
+```{r}
+lib_C = Read10X("~/projects/Mackay_Breast_Cancer/data/CITE-GEX-C/outs/filtered_feature_bc_matrix/")
+
+seu_c = CreateSeuratObject(lib_C$`Gene Expression`, project = "Lane C")
+
+# create a new assay to store ADT information
+adt_assay <- CreateAssayObject(counts = lib_C$`Antibody Capture`)
+
+# add this assay to the previously created Seurat object
+seu_c[["ADT"]] <- adt_assay
+
+# Validate that the object now contains multiple assays
+Assays(seu_c)
+```
+
+
+```{r}
+seu_c$percent.mt = PercentageFeatureSet(seu_c, pattern = "^MT-")
+VlnPlot(seu_c, features = c("nCount_RNA", "nFeature_RNA", "percent.mt", "nCount_ADT", "nFeature_ADT"))
+```
+```{r}
+seu_c@meta.data %>% as_tibble() %>%
+  filter(percent.mt < 25) %>%
+  ggdensity(x = "percent.mt" ) +
+  geom_vline(xintercept = 5, linetype="dashed", colour = "red")
+
+seu_c@meta.data %>% as_tibble() %>%
+  ggdensity(x = "nFeature_RNA" ) +
+  geom_vline(xintercept = 500, linetype="dashed", colour = "red")
+
+seu_c = seu_c[, seu_c$percent.mt <= 5 & seu_c$nFeature_RNA >= 500 ]
+```
+
+```{r eval=FALSE}
+data.frame(x = row.names(seu_c@meta.data)) %>%
+  write.table(quote = F, row.names = F, col.names = F, file = "~/projects/Mackay_Breast_Cancer/CITE-GEX-C/outs/whitelist.txt")
+```
+
+
+```{r}
+don = read_tsv("~/projects/Mackay_Breast_Cancer/data/CITE-GEX-C/outs/vireo_possorted_genome_filtered.bam/donor_ids.tsv")
+
+seu_c@meta.data %>% as_tibble(rownames = "cell") %>%
+  left_join(don) -> don
+
+seu_c$donor_id = don$donor_id
+
+
+table(seu_c$donor_id)
+```
+
+
+```{r}
+tcr = read.csv("~/projects/Mackay_Breast_Cancer/data/TCR-C/outs/filtered_contig_annotations.csv")
+
+tcr %>% filter(productive == "true") %>% 
+  inner_join(don, by = c("barcode" = "cell")) %>% 
+  filter(donor_id != "unassigned") %>%
+  group_by(barcode) %>%
+  summarise(n = n(), u = min(umis), a=sum(chain == "TRA"), b = sum(chain == "TRB"), d = donor_id[1]) %>% 
+  group_by(n, a, b) %>% summarise(f = n(), u = mean(u), a=mean(a), b = mean(b), doublets = sum(d == "doublet")/n()*100) %>%
+  rename("# chains per cell" = n, "# alpha chains" = a, "# beta chains" = b, 
+         "# cells with conf." = f, "ave(min chain umis)" = u, "% doublets" = doublets)
+```
+
+```{r}
+tcr %>% filter(productive == "true") %>% 
+  group_by(barcode) %>%
+  filter( sum(chain == "TRB") >= 2) -> tcr_filt
+  
+tcr %>%
+  select(barcode, chain, v_gene, j_gene, c_gene, cdr3, cdr3_nt, umis, raw_consensus_id) %>%
+  mutate(p = paste(v_gene,  j_gene, c_gene, sep = "_")) %>%
+  group_by(barcode, chain) %>%
+  arrange(-umis) %>%
+  summarise(comb = p[1], chain = chain[1], cdr3 = cdr3[1], cdr3_nt = cdr3_nt[1]) %>%  
+  pivot_wider(id_cols = c(barcode), names_from = chain, values_from = c(comb, cdr3, cdr3_nt)) -> tcr_chains
+
+seu_c@meta.data %>% as_tibble(rownames = "barcode") %>%
+  left_join(tcr_chains) -> x
+
+seu_c@meta.data = cbind(seu_c@meta.data, x[,9:14])
+```
+
+
+```{r}
+summary(seu_c$donor_id %in% c("unassigned", "doublet") | rownames(seu_c@meta.data) %in% tcr_filt$barcode)
+
+```
+
+```{r eval=FALSE}
+seu_c = seu_c[, !seu_c$donor_id %in% c("unassigned", "doublet") &
+                !rownames(seu_c@meta.data) %in% tcr_filt$barcode]
+seu_c = SCTransform(seu_c)
+seu_c = RunPCA(seu_c, verbose = F)
+ElbowPlot(seu_c)
+seu_c = RunUMAP(seu_c, dims = 1:30)
+
+seu_c <- NormalizeData(seu_c, normalization.method = "CLR", margin = 2, assay = "ADT")
+
+
+saveRDS(seu_c, "~/projects/Mackay_Breast_Cancer/output/seu_c.Rds")
+```
+
+
+
+

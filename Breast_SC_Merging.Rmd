@@ -1,0 +1,289 @@
+---
+title: "11_merging_final"
+author: "jibsch"
+date: "2023-06-06"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: inline
+---
+
+
+## Load Lbrarires
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+
+cols = c("Contra_Healthy" = "springgreen4", "Peri_Healthy" = "springgreen1",
+           "Naive_Blood" = "red3", "Tumour" = "dodgerblue",
+           "Tumour1" = "dodgerblue", "Tumour2" = "dodgerblue3")
+```
+
+## Donor Assignment
+
+```{r}
+seu_a <- readRDS("../output/seu_a.Rds")
+
+seu_a$sample = recode(seu_a$donor_id, 
+                      "donor5" = "BC07_Tumour1",
+                      "donor4" = "BC08_Peri_Healthy",
+                      "donor7" = "BC10_Tumour",
+                      "donor2" = "BC12_Peri_Healthy",
+                      "donor0" = "BCXX_Peri_Healthy",
+                      "donor1" = "BCYY_Peri_Healthy",
+                      "donor6" = "BCZZ_Peri_Healthy",
+                      "donor3" = "Naive_Blood")
+
+seu_a$tissue = gsub("BC[0-9XYZ]*_","", seu_a$sample)
+
+DimPlot(seu_a, group.by = "sample", label = T)
+DimPlot(seu_a, group.by = "tissue", label = T)
+```
+
+
+```{r}
+seu_b <- readRDS("../output/seu_b.Rds")
+
+seu_b$sample = recode(seu_b$donor_id, 
+                      "donor2" = "BC07_Peri_Healthy",
+                      "donor3" = "BC08_Tumour",
+                      "donor0" = "BC09_Tumour",
+                      "donor6" = "BC12_Contra_Healthy",
+                      "donor1" = "BCXX_Peri_Healthy",
+                      "donor7" = "BCYY_Peri_Healthy",
+                      "donor4" = "BCZZ_Peri_Healthy",
+                      "donor5" = "Naive_Blood")
+
+
+seu_b$tissue = gsub("BC[0-9XYZ]*_","", seu_b$sample)
+
+DimPlot(seu_b, group.by = "sample", label = T)
+DimPlot(seu_b, group.by = "tissue", label = T)
+```
+
+```{r}
+seu_c <- readRDS("../output/seu_c.Rds")
+
+seu_c$sample = recode(seu_c$donor_id, 
+                      "donor3" = "BC07_Tumour2",
+                      "donor5" = "BC09_Peri_Healthy",
+                      "donor0" = "BC10_Peri_Healthy",
+                      "donor2" = "BC12_Tumour",
+                      "donor6" = "BCXX_Peri_Healthy",
+                      "donor4" = "BCYY_Peri_Healthy",
+                      "donor1" = "BCZZ_Peri_Healthy",
+                      "donor7" = "Naive_Blood")
+
+seu_c$tissue = gsub("BC[0-9XYZ]*_","", seu_c$sample)
+
+DimPlot(seu_c, group.by = "sample", label = T)
+DimPlot(seu_c, group.by = "tissue", label = T)
+```
+
+
+## Merge libraries
+
+```{r}
+seu = merge(seu_a, seu_b) %>% merge(seu_c)
+
+
+seu$tissue = gsub("Tumour[12]", "Tumour", seu$tissue)
+seu$donor = gsub("_Tumour[12]*", "", seu$sample) %>% gsub("_(Peri|Contra)_Healthy","",.)
+
+```
+
+```{r}
+seu@active.assay = "RNA"
+seu = NormalizeData(seu)
+
+seu = FindVariableFeatures(seu)
+
+seu@assays$RNA@var.features = seu@assays$RNA@var.features[!startsWith(seu@assays$RNA@var.features, "MT") &
+                                                          ! startsWith(seu@assays$RNA@var.features, "TR[AB]") &
+                                                            ! startsWith(seu@assays$RNA@var.features, "HLA") ]
+
+seu = ScaleData(seu)
+
+seu = RunPCA(seu, verbose = F)
+seu = RunUMAP(seu, dims = 1:30)
+
+DimPlot(seu, group.by = "tissue")
+
+DimPlot(seu, group.by = "sample")
+
+seu = FindNeighbors(seu, dims = 1:30)
+seu = FindClusters(seu)
+
+DimPlot(seu, label = T)
+
+FeaturePlot(seu, features = c("CD8A", "Hu.CD8", "CD4"))
+
+VlnPlot(seu, features = c("CD8A", "Hu.CD8", "CD4"))
+
+RidgePlot(seu, features = c("CD8A", "Hu.CD8", "CD4"), sort = T)
+```
+
+## Assign Borad Cell Types
+```{r}
+seu$type = recode(seu$seurat_clusters,
+                  "0" = "CD4 T", "5" = "CD4 T", "7" = "CD4 T", "12" = "CD4 T",  
+                  "10" = "Other", "17" = "Other",
+                  "6" = "Blood", "11" = "Blood",
+                  "1" = "CD8 T","2" = "CD8 T", "3" = "CD8 T", "4" = "CD8 T",
+                  "8" = "CD8 T", "9" = "CD8 T", "13" = "CD8 T",
+                  "14" = "CD8 T", "15" = "CD8 T", "16" = "CD8 T",)
+
+DimPlot(seu, group.by = "type")
+```
+
+
+### Overview UMAPs
+```{r}
+
+
+FeaturePlot(seu, features = c("Hu.CD103", "ITGAE"), split.by = "tissue")
+FeaturePlot(seu, features = c("Hu.CD69", "CD69"), split.by = "tissue")
+FeaturePlot(seu, features = c("Hu.CD161", "KLRB1"), split.by = "tissue")
+FeaturePlot(seu, features = c("TOX", "EOMES"), split.by = "tissue")
+FeaturePlot(seu, features = c("PDCD1", "LAG3"), split.by = "tissue")
+FeaturePlot(seu, features = c("HAVCR2", "TCF7"), split.by = "tissue")
+FeaturePlot(seu, features = c("Hu.CD38-HIT2", "CD38"), split.by = "tissue")
+FeaturePlot(seu, features = c("Hu.CD39", "ENTPD1"), split.by = "tissue")
+```
+
+### Clustering
+```{r}
+seu = FindNeighbors(seu, dims = 1:30)
+seu = FindClusters(seu)
+DimPlot(seu, label = T)
+```
+We identified cluster 17 to likely be a doublet cluster (high CD4/CD8 co-expression
+within the same donor).
+Here, we remove it and re-analyse.
+```{r}
+VlnPlot(seu,features = c("CD8A", "CD4"))
+```
+
+
+
+
+
+## Cell Cycle
+```{r}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+seu = CellCycleScoring(seu, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+
+DimPlot(seu, group.by = "Phase")
+```
+## CytoTRACE
+
+```{r}
+library(CytoTRACE)
+
+cyto = CytoTRACE(as.matrix(seu@assays$RNA@data))
+
+seu$CytoTRACE = cyto$CytoTRACE
+
+plotto_signature_scoring_plot("CytoTRACE", seu, size = 0.9)
+```
+
+
+
+
+```{r}
+plot_groups = function(group, seu, grouping.var) {
+  
+  Embeddings(seu, reduction = "umap") %>% as_tibble() %>%
+    mutate(lib = seu$orig.ident, tissue = seu$tissue, donor = seu$donor) %>%
+    mutate(tissue = ifelse(grepl("Tumour1", seu$sample), "Tumour1",
+                           ifelse(grepl("Tumour2", seu$sample), "Tumour2", tissue))) -> pdat
+  ggplot(pdat, aes(UMAP_1, UMAP_2)) +
+    geom_point(data = pdat[pdat[,grouping.var] != group,], colour = "grey", size = 0.5) +
+    geom_point(data = pdat[pdat[,grouping.var] == group,], colour = "black", size = 0.7) +
+    geom_point(data = pdat[pdat[,grouping.var] == group,], aes(colour = tissue), size = 0.6) +
+    ggtitle(group) +
+    plotto_theme_panel() +
+    scale_color_manual(values = cols) +
+    theme(legend.position = "none")
+}
+
+plot_groups("BC07", seu, "donor")
+
+ps = lapply(as.list(levels(factor(seu$donor))), function(x) plot_groups(x, seu, "donor"))
+plotto_panel_it(plot_list = ps, width = 5, height = 5, nrow = 3)
+grid.arrange(grobs = list(cowplot::get_legend(DimPlot(seu, group.by = "tissue", cols = cols) + 
+                                                theme(legend.position = "top", legend.text = element_text(size = 8)) +
+                                                guides(color = guide_legend(nrow = 1, override.aes = list(size = 3)))), 
+                       plotto_panel_it(plot_list = ps, width = 5, height = 5, nrow = 3)), nrow = 2, heights = c(0.05,1)) -> p
+ggsave(p, filename = "../plots/02_analysys_donor_tissue.tiff", width = 19, height = 21, units = "cm")
+
+ps = lapply(as.list(levels(factor(seu$orig.ident))), function(x) plot_groups(x, seu, "lib"))
+grid.arrange(grobs = list(cowplot::get_legend(DimPlot(seu, group.by = "tissue", cols = cols) + 
+                                                theme(legend.position = "top", legend.text = element_text(size = 8)) +
+                                                guides(color = guide_legend(nrow = 1, override.aes = list(size = 3)))), 
+                       plotto_panel_it(plot_list = ps, width = 5, height = 5, nrow = 1)), nrow = 2, heights = c(0.15,1)) -> p
+
+ggsave(p, filename = "../plots/02_analysys_lane_tissue.tiff", width = 19, height = 7, units = "cm")
+```
+
+
+
+### Markers
+```{r}
+m = FindAllMarkers(seu, only.pos = T)
+```
+
+
+```{r}
+library(openxlsx)
+wb = createWorkbook()
+
+lapply(as.list(c(0:17)), function(x){
+  n = paste("DEGs cluster",x)
+  addWorksheet(wb, n)
+  writeData(wb = wb, sheet = n, x = m[m$cluster == x,])
+})
+
+saveWorkbook(wb, file = "../output/DEGs_clusters_no_tcr.xlsx", overwrite = T)
+```
+
+```{r}
+library(edgeR)
+library(org.Hs.eg.db)
+m$entrez = mapIds(org.Hs.eg.db, m$gene, "SYMBOL", column = "ENTREZID")
+keggs = lapply(as.list(c(0:17)), function(x) kegga(de = m$entrez[m$cluster == x], species = "Hs"))
+names(keggs) = paste("cluster", c(0:17))
+
+topKEGG(keggs$`cluster 5`)
+
+wb = createWorkbook()
+
+lapply(as.list(names(keggs)), function(x){
+  n = paste("KEGG cluster",x)
+  addWorksheet(wb, n)
+  writeData(wb = wb, sheet = n, x = as.data.frame(topKEGG(keggs[[x]], number = 50)), rowNames = T)
+})
+
+saveWorkbook(wb, file = "../output/KEGG_clusters_no_tcr.xlsx", overwrite = T)
+```
+
+```{r}
+gos = lapply(as.list(c(0:17)), function(x) goana(de = m$entrez[m$cluster == x], species = "Hs"))
+names(gos) = paste("cluster", c(0:17))
+wb = createWorkbook()
+
+lapply(as.list(names(gos)), function(x){
+  n = paste("GO Terms cluster",x)
+  addWorksheet(wb, n)
+  writeData(wb = wb, sheet = n, x = as.data.frame(topGO(gos[[x]], number = 50)), rowNames = T)
+})
+
+saveWorkbook(wb, file = "../output/GO_clusters_no_tcr.xlsx", overwrite = T)
+```
+```{r}
+diff = list(degs = m, kegg = keggs, go = gos)
+saveRDS(diff, "../output/differential_data_no_tcr.Rds")
+```
