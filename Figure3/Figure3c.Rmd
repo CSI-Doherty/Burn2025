@@ -1,0 +1,72 @@
+---
+title: "Figure3c"
+output: html_document
+date: "2025-09-16"
+---
+
+```{r}
+library(Seurat)
+library(gprofiler2)
+library(tidyverse)
+library(openxlsx)
+library(edgeR)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+```
+
+```{r}
+seu_cd8 <- readRDS("~/projects/MackayLab/Mackay_Breast_Cancer/output/seu_cd8.Rds")
+liver = readRDS("~/projects/Mackay_Liver_Cancer/output/seu_cd8s_noMait_integrated.Rds")
+```
+
+## Breast Liver Signature Overlap
+```{r}
+breast_trm = read.table("~/projects/MackayLab/Mackay_Breast_Cancer/Luke/Results/8/BC_breast_pseudo-bulk_sig_unique-TRM-vs-all_filtered.txt", header= T)
+liver_trm = read.table("~/projects/MackayLab/Mackay_Liver_Cancer/data/BC_liver_DE_pseudo-bulk_sig_unique-TRM-vs-all_filtered.txt", header=T)
+breast_tex = read.table("~/projects/MackayLab/Mackay_Breast_Cancer/Luke/Results/8/BC_breast_pseudo-bulk_sig_unique-TEX-vs-all_filtered.txt", header= T)
+liver_tex = read.table("~/projects/MackayLab/Mackay_Liver_Cancer/data/BC_liver_DE_pseudo-bulk_sig_unique-TEX-vs-all_filtered.txt", header=T)
+```
+
+```{r}
+library(edgeR)
+seu_cd8 = SetIdent(seu_cd8, value = "CellType_major")
+g = union(liver_tex$Gene, liver_trm$Gene)
+
+markers2_trm = FindMarkers(seu_cd8, only.pos = F, features = g, logfc.threshold = 0, min.pct = 0, ident.1 = "TRM")
+
+breast_trm_logfc2 = markers2_trm$avg_log2FC
+names(breast_trm_logfc2) = row.names(markers2_trm)
+
+
+cameraPR(breast_trm_logfc2, index = liver_trm$Gene[liver_trm$Direction=="up"])
+cameraPR(breast_trm_logfc2, index = liver_trm$Gene[liver_trm$Direction!="up"])
+
+pdf("../plots/barcode_TRM_TRM_Breast.pdf", width = 7, height = 4)
+barcodeplot(breast_trm_logfc2, index = liver_trm$Gene[liver_trm$Direction=="up"], 
+            index2 = liver_trm$Gene[liver_trm$Direction!="up"], main = "Liver TRM vs Breast", 
+            labels = c("Down in B TRM", "up in B TRM"), xlab = "logFC TRM vs all")
+dev.off()
+
+```
+
+### Liver
+```{r}
+g = union(breast_tex$Gene, breast_trm$Gene)
+
+markers2_trm = FindMarkers(liver, only.pos = F, features = g, logfc.threshold = 0, min.pct = 0, ident.1 = "TRM1")
+
+liver_trm_logfc = markers2_trm$avg_log2FC
+names(liver_trm_logfc) = row.names(markers2_trm)
+
+
+cameraPR(liver_trm_logfc, index = breast_trm$Gene[breast_trm$Direction=="up"])
+cameraPR(liver_trm_logfc, index = breast_trm$Gene[breast_trm$Direction!="up"])
+
+pdf("../plots/barcode_TRM_TRM_Liver.pdf", width = 7, height = 4)
+barcodeplot(liver_trm_logfc, index = breast_trm$Gene[breast_trm$Direction=="up"], 
+            index2 = breast_trm$Gene[breast_trm$Direction!="up"], main = "Breast TRM vs Liver", 
+            labels = c("Down in L TRM", "up in L TRM"), xlab = "logFC TRM (TRM1) vs all")
+dev.off()
+
+```
+
+

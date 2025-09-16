@@ -13,7 +13,8 @@ Figure 2:
 - nil
 
 Figure 3:
-- Jan or Luke: 3b, 3c
+- Luke: 3b
+- Jan 3c - DONE
 - Tony: 3e, 3f, 3g
 - 3h, 3i?
 
