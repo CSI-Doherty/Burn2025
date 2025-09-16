@@ -24,9 +24,9 @@ Figure 4:
 - 4f?
 
 Figure 5:
-- 4p, 4q, 4r?
+- 4p, 4q, 4r - DONE
 
 Figure 6:
-- bulk?
+- bulk - Luke
 
 Extended?

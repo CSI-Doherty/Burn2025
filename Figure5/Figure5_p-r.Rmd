@@ -1,0 +1,103 @@
+---
+title: "Figure5_p-r"
+output: html_document
+date: "2025-09-16"
+---
+
+```{r}
+library(Seurat)
+library(tidyverse)
+source("~/tools/BioinfTools/Plotting_Functions.R")
+```
+
+
+## TEX/TRM on Mouse BC data
+```{r}
+seu_noblood <- readRDS("~/projects/Mackay_BC_Mouse/output/seu_noblood.Rds")
+
+seu = seu_noblood[,seu_noblood$type %in% c("Tumor_gBT-I",  "Tumor_OT-I")]
+seu = SCTransform(seu)
+
+varfeatures = seu@assays$SCT@var.features
+varfeatures = varfeatures[!grepl("^Tr[ab]", varfeatures)]
+
+
+seu = RunPCA(seu, features = varfeatures, verbose = F)
+seu = RunUMAP(seu, dims =1:20)
+
+DimPlot(seu, group.by = "type")
+```
+
+
+```{r}
+library(gprofiler2)
+#TEX signature from Luke
+TEX = read.table("../Luke/Results/8/BC_breast_pseudo-bulk_sig_unique-TEX-vs-all_filtered.txt", header= T)
+
+
+
+unique(TEX$Direction)
+# TEX_up = gorth(c(TEX[TEX$Direction == 'up',]$Gene, 'CD3D', 'CD3E', 'ITGAE', 'CD69', 'CD8A', 'CD8B'), 
+TEX_up = gorth(TEX[TEX$Direction == 'up',]$Gene, 
+               source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+TEX_down = gorth(TEX[TEX$Direction == 'down',]$Gene, 
+               source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+
+
+
+seu = AddModuleScore(seu, features = list(TEX_up,TEX_down), search=TRUE)
+colnames(seu@meta.data) = recode(colnames(seu@meta.data),"Cluster1" = "TEX_up","Cluster2" = "TEX_down")
+
+plotto_signature_scoring_plot("TEX_up", seu, size = 1)
+
+#TRM signature from Luke
+TRM = read.table("../Luke/Results/8/BC_breast_pseudo-bulk_sig_unique-TRM-vs-all_filtered.txt", header= T)
+unique(TRM$Direction)
+# TRM_up = gorth(c(TRM[TRM$Direction == 'up',]$Gene, 'CD3D', 'CD3E', 'ITGAE', 'CD69', 'CD8A', 'CD8B'), 
+TRM_up = gorth(TRM[TRM$Direction == 'up',]$Gene, 
+               source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+TRM_down = gorth(TRM[TRM$Direction == 'down',]$Gene, 
+               source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+
+seu = AddModuleScore(seu, features = list(TRM_up,TRM_down), search=TRUE)
+colnames(seu@meta.data) = recode(colnames(seu@meta.data),"Cluster1" = "TRM_up","Cluster2" = "TRM_down")
+
+#Shared TRM/TEX signature from Luke
+shared = read.csv('../data/BC_pseudo-bulk_sig_shared-TRM+TEX-vs-all_RUV_cluster_v2_filtered.txt', sep = '\t')
+unique(shared$Direction)
+# TRM_up = gorth(c(TRM[TRM$Direction == 'up',]$Gene, 'CD3D', 'CD3E', 'ITGAE', 'CD69', 'CD8A', 'CD8B'), 
+shared_up = gorth(shared[shared$Direction == 'up',]$Gene, 
+               source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+shared_down = gorth(shared[shared$Direction == 'down',]$Gene, 
+               source_organism = "hsapiens", target_organism = "mmusculus")$ortholog_name
+
+seu = AddModuleScore(seu, features = list(shared_up,shared_down), search=TRUE)
+colnames(seu@meta.data) = recode(colnames(seu@meta.data),"Cluster1" = "shared_up","Cluster2" = "shared_down")
+
+plotto_signature_scoring_plot("shared_up", seu, size = 1)
+```
+
+```{r}
+seu$TEX = scale(seu$TEX_up) - scale(seu$TEX_down)
+seu$TRM = scale(seu$TRM_up) - scale(seu$TRM_down)
+```
+
+```{r}
+ggarrange(plots = list(plotto_signature_scoring_plot("TRM", seu, size =1),
+                       plotto_signature_scoring_plot("TEX", seu, size =1),
+                      # plotto_signature_scoring_plot("shared", seu, size =1),
+                       DimPlot(seu, group.by = "type", label = T)), nrow = 1) -> p
+
+ggsave(p, filename = "../plots/trm_tex_shared_sig_umap.pdf", width = 30, height = 8, units = "cm")
+```
+
+
+```{r}
+seu = FindNeighbors(seu, dims = 1:20)
+seu = FindClusters(seu, resolution = 0.8)
+
+seu$group = ifelse(seu$seurat_clusters %in% c(0,1,4,6), "left", "right")
+
+VlnPlot(seu, features = c("TRM", "TEX"), group.by = "type") -> p
+ggsave(p, filename = "../plots/trm_tex_sig_violin.pdf", width = 18, height = 11, units = "cm")
+```
