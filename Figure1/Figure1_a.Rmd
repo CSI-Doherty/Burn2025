@@ -1,0 +1,562 @@
+```{r}
+options(digits=3, width=100)
+
+library("tidyverse")
+library("RColorBrewer")
+library("ggpubr")
+library("patchwork")
+library("readxl")
+
+library("limma")
+library("edgeR")
+library("ruv")
+library("EDASeq")
+
+library("Seurat")
+library("SingleCellExperiment")
+
+library("genefu")
+library("survival")
+library("survminer")
+library("pROC")
+library("verification")
+
+.ruvIII <- function (Y, M, ctl, k=NULL, eta=NULL,
+                     include.intercept=TRUE,
+                     average=FALSE,
+                     fullalpha=NULL,
+                     return.info=FALSE,
+                     inputcheck=TRUE)
+{
+  tological <- function (ctl, n){
+    ctl2 = rep(FALSE, n)
+    ctl2[ctl] = TRUE
+    return(ctl2)
+  }
+  if (is.data.frame(Y)) Y = data.matrix(Y)
+  m = nrow(Y)
+  n = ncol(Y)
+  M = replicate.matrix(M)
+  ctl = tological(ctl, n)
+  if (inputcheck) {
+    if (m > n)
+    warning("m is greater than n! This is not a problem itself,
+    but may indicate that you need to transpose your data
+    matrix. Please ensure that rows correspond to
+    observations (e.g. microarrays) and columns correspond to
+    features (e.g. genes).")
+    if (sum(is.na(Y)) > 0)
+    warning("Y contains missing values. This is not supported.")
+    if (sum(Y == Inf, na.rm = TRUE) + sum(Y == -Inf, na.rm = TRUE) > 0)
+    warning("Y contains infinities. This is not supported.")
+  }
+  Y = RUV1(Y, eta, ctl, include.intercept = include.intercept)
+  if (ncol(M) >= m) newY = Y
+  else if (is.null(k)) {
+    ycyctinv = solve(Y[, ctl] %*% t(Y[, ctl]))
+    newY = (M %*% solve(t(M) %*% ycyctinv %*% M) %*% (t(M) %*% ycyctinv)) %*% Y
+    fullalpha = NULL
+  }
+  else if (k == 0) {
+    newY = Y
+    fullalpha = NULL
+  }
+  else {
+    if (is.null(fullalpha)) {
+    Y0 = residop(Y, M)
+    fullalpha = t(svd(Y0 %*% t(Y0))$u[, 1:min(m - ncol(M), sum(ctl)), drop = FALSE]) %*% Y
+  }
+  alpha = fullalpha[1:min(k, nrow(fullalpha)), , drop = FALSE]
+  ac = alpha[, ctl, drop = FALSE]
+  W = Y[, ctl] %*% t(ac) %*% solve(ac %*% t(ac))
+  newY = Y - W %*% alpha
+  }
+  if (average) newY = ((1/apply(M, 2, sum)) * t(M)) %*% newY
+  if (!return.info) return(newY)
+  else return(list(
+    newY = newY,
+    M = M,
+    fullalpha = fullalpha,
+    W = W,
+    WA = W %*% alpha,
+    alpha = alpha))
+}
+
+```
+
+Mackay 2016: skin
+```{r, paged.print=F, fig.height=5, fig.width=10}
+# processing
+info <- read.csv("info_mackay2016.csv", header=TRUE, stringsAsFactors=FALSE)
+Z <- read.table("data_mackay2016.txt", header=TRUE, stringsAsFactors=FALSE)
+rownames(Z) <- Z$EntrezID
+Z <- Z[,-c(1,2)]
+colnames(Z) <- 1:ncol(Z)
+
+i <- info$Infection=="HSV"
+info <- info[i,]
+Z <- Z[,i]
+
+o <- order(info$Type2)
+info <- info[o,]
+Z <- Z[,o]
+
+group <- info$Type2
+group[group=="Spleen.CM"] <- "Circ"
+group[group=="Spleen.EM"] <- "Circ"
+group <- factor(group)
+
+# annotation
+NCBI <- read.delim("Mus_musculus.gene_info.gz", sep="\t", header=TRUE, stringsAsFactors=FALSE)
+m <- match(rownames(Z), NCBI$GeneID)
+tab <- NCBI[m, c("GeneID", "Symbol", "Synonyms", "chromosome", "description", "type_of_gene")]
+rownames(tab) <- rownames(Z)
+Y.all <- DGEList(counts=Z, genes=tab)
+
+# filter--gene type
+i1 <- is.na(Y.all$genes$Symbol)
+i2 <- Y.all$genes$type_of_gene=="rRNA"
+keep <- !i1 & !i2
+Y.core <- Y.all[keep,,keep.lib.size=FALSE]
+
+# filter--low expression
+L <- list(1:2, 3:6)
+Z <- Y.core$counts
+c <- 5
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(Z[,g]>c)==length(g)}
+keep <- rowSums(KEEP) >= 1
+Y <- Y.core[keep,,keep.lib.size=FALSE]
+
+# imputation
+L <- list(1:2, 3:6)
+Z <- Y$counts
+Z.imp <- NULL
+for(j in 1:length(L)){
+  g <- L[[j]]
+  Z.star <- Z[,g]
+  lib.sizes <- colSums(Z.star)
+  for(i in 1:nrow(Z.star)){
+    gene.counts <- Z.star[i,]
+    is.zero <- gene.counts==0
+    if(sum(is.zero) > 0 & !sum(is.zero)==ncol(Z.star)){
+      imputed <- lib.sizes*sum(gene.counts[!is.zero])/sum(lib.sizes[!is.zero])
+      gene.counts[is.zero] <- imputed[is.zero]
+      Z.star[i,] <- gene.counts
+    }
+  }
+  Z.imp <- cbind(Z.imp, Z.star)
+}
+Y.imp <- DGEList(Z.imp, genes=Y$genes)
+
+# normalisation
+mouse.hk <- readRDS("hk-genes_mm.rds")
+genes <- toupper(Y$genes$Symbol)
+neg.ctl <- which(genes %in% mouse.hk)
+M <- replicate.matrix(group)
+k=1
+Y.imp <- calcNormFactors(Y.imp, method="TMM")
+y <- cpm(Y.imp, log=TRUE, prior.count=1)
+out <- .ruvIII(Y=t(y), k=k, M=M, ctl=neg.ctl, return.info=TRUE)
+W <- out$W
+# par(mfcol=c(1,2))
+# Yn <- t(out$newY)
+# RLE <- Yn - rowMedians(Yn)
+# type <- group
+# col.type <- type
+# levels(col.type) <- c("purple2","green2", "orange2")
+# plotPCA(Yn, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(col.type), cex=2, main="PCA (RUV)")
+# boxplot(RLE, col=as.character(col.type), outline=FALSE, names=NULL, main="RLE (RUV)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=1)
+
+# logFC estimation
+X <- model.matrix(~0 + group + W)
+colnames(X) <- c(levels(group), make.names(1:k))
+CM <- makeContrasts(Skin = Skin.TRM - Circ, levels=X)
+y <- new("EList")
+y$E <- cpm(Y.imp, log=TRUE, prior.count=1)
+y$genes <- Y$genes
+fit <- lmFit(y, X)
+fit <- contrasts.fit(fit, contrasts=CM)
+fit <- eBayes(fit, trend=TRUE, robust=TRUE)
+
+Y.2016.skin <- Y
+fit.2016.skin <- fit
+
+```
+
+Mackay 2016: gut
+```{r, paged.print=F, fig.height=5, fig.width=10}
+# processing
+info <- read.csv("info_mackay2016.csv", header=TRUE, stringsAsFactors=FALSE)
+Z <- read.table("data_mackay2016.txt", header=TRUE, stringsAsFactors=FALSE)
+rownames(Z) <- Z$EntrezID
+Z <- Z[,-c(1,2)]
+colnames(Z) <- 1:ncol(Z)
+
+i1 <- info$Type2=="Gut.TRM" & info$Infection=="LCMV"
+i2 <- info$Type2=="Spleen.CM" & info$Infection=="LCMV"
+i3 <- info$Type2=="Spleen.EM" & info$Infection=="LCMV"
+i <- i1 | i2 | i3
+info <- info[i,]
+Z <- Z[,i]
+
+o <- order(info$Type2)
+info <- info[o,]
+Z <- Z[,o]
+
+group <- info$Type2
+group[group=="Spleen.CM"] <- "Circ"
+group[group=="Spleen.EM"] <- "Circ"
+group <- factor(group)
+
+# annotation
+NCBI <- read.delim("Mus_musculus.gene_info.gz", sep="\t", header=TRUE, stringsAsFactors=FALSE)
+m <- match(rownames(Z), NCBI$GeneID)
+tab <- NCBI[m, c("GeneID", "Symbol", "Synonyms", "chromosome", "description", "type_of_gene")]
+rownames(tab) <- rownames(Z)
+Y.all <- DGEList(counts=Z, genes=tab)
+
+# filter--gene type 
+i1 <- is.na(Y.all$genes$Symbol)
+i2 <- Y.all$genes$type_of_gene=="rRNA"
+keep <- !i1 & !i2
+Y.core <- Y.all[keep,,keep.lib.size=FALSE]
+
+# filter--low expression
+L <- list(1:2, 3:6)
+Z <- Y.core$counts
+c <- 10
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(Z[,g]>c)==length(g)}
+keep <- rowSums(KEEP) >= 1
+Y <- Y.core[keep,,keep.lib.size=FALSE]
+
+# imputation
+L <- list(1:2, 3:6)
+Z <- Y$counts
+Z.imp <- NULL
+for(j in 1:length(L)){
+  g <- L[[j]]
+  Z.star <- Z[,g]
+  lib.sizes <- colSums(Z.star)
+  for(i in 1:nrow(Z.star)){
+    gene.counts <- Z.star[i,]
+    is.zero <- gene.counts==0
+    if(sum(is.zero) > 0 & !sum(is.zero)==ncol(Z.star)){
+      imputed <- lib.sizes*sum(gene.counts[!is.zero])/sum(lib.sizes[!is.zero])
+      gene.counts[is.zero] <- imputed[is.zero]
+      Z.star[i,] <- gene.counts
+    }
+  }
+  Z.imp <- cbind(Z.imp, Z.star)
+}
+Y.imp <- DGEList(Z.imp, genes=Y$genes)
+
+# normalisation
+mouse.hk <- readRDS("hk-genes_mm.rds")
+genes <- toupper(Y$genes$Symbol)
+neg.ctl <- which(genes %in% mouse.hk)
+M <- replicate.matrix(group)
+k=1
+Y.imp <- calcNormFactors(Y.imp, method="TMM")
+y <- cpm(Y.imp, log=TRUE, prior.count=1)
+out <- .ruvIII(Y=t(y), k=k, M=M, ctl=neg.ctl, return.info=TRUE)
+W <- out$W
+# par(mfcol=c(1,2))
+# Yn <- t(out$newY)
+# RLE <- Yn - rowMedians(Yn)
+# type <- group
+# col.type <- type
+# levels(col.type) <- c("purple2","green2", "orange2")
+# plotPCA(Yn, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(col.type), cex=2, main="PCA (RUV)")
+# boxplot(RLE, col=as.character(col.type), outline=FALSE, names=NULL, main="RLE (RUV)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=1)
+
+X <- model.matrix(~0 + group + W)
+colnames(X) <- c(levels(group), make.names(1:k))
+CM <- makeContrasts(Gut = Gut.TRM - Circ, levels=X)
+y <- new("EList")
+y$E <- cpm(Y.imp, log=TRUE, prior.count=1)
+y$genes <- Y$genes
+fit <- lmFit(y, X)
+fit <- contrasts.fit(fit, contrasts=CM)
+fit <- eBayes(fit, trend=TRUE, robust=TRUE)
+
+Y.2016.gut <- Y
+fit.2016.gut <- fit
+
+```
+
+Mackay 2016: liver
+```{r, paged.print=F, fig.height=5, fig.width=10}
+# processing
+info <- read.csv("info_mackay2016.csv", header=TRUE, stringsAsFactors=FALSE)
+Z <- read.table("data_mackay2016.txt", header=TRUE, stringsAsFactors=FALSE)
+rownames(Z) <- Z$EntrezID
+Z <- Z[,-c(1,2)]
+colnames(Z) <- 1:ncol(Z)
+
+i1 <- info$Type2=="Liver.TRM" & info$Infection=="LCMV"
+i2 <- info$Type2=="Spleen.CM" & info$Infection=="LCMV"
+i3 <- info$Type2=="Spleen.EM" & info$Infection=="LCMV"
+i <- i1 | i2 | i3
+info <- info[i,]
+Z <- Z[,i]
+
+o <- order(info$Type2)
+info <- info[o,]
+Z <- Z[,o]
+
+group <- info$Type2
+group[group=="Spleen.CM"] <- "Circ"
+group[group=="Spleen.EM"] <- "Circ"
+group <- factor(group)
+
+# annotation
+NCBI <- read.delim("Mus_musculus.gene_info.gz", sep="\t", header=TRUE, stringsAsFactors=FALSE)
+m <- match(rownames(Z), NCBI$GeneID)
+tab <- NCBI[m, c("GeneID", "Symbol", "Synonyms", "chromosome", "description", "type_of_gene")]
+rownames(tab) <- rownames(Z)
+Y.all <- DGEList(counts=Z, genes=tab)
+
+# filter--gene types
+i1 <- is.na(Y.all$genes$Symbol)
+i2 <- Y.all$genes$type_of_gene=="rRNA"
+keep <- !i1 & !i2
+Y.core <- Y.all[keep,,keep.lib.size=FALSE]
+
+# filter--low expression
+L <- list(1:2, 3:6)
+Z <- Y.core$counts
+c <- 10
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(Z[,g]>c)==length(g)}
+keep <- rowSums(KEEP) >= 1
+Y <- Y.core[keep,,keep.lib.size=FALSE]
+
+# imputation
+L <- list(1:2, 3:6)
+Z <- Y$counts
+Z.imp <- NULL
+for(j in 1:length(L)){
+  g <- L[[j]]
+  Z.star <- Z[,g]
+  lib.sizes <- colSums(Z.star)
+  for(i in 1:nrow(Z.star)){
+    gene.counts <- Z.star[i,]
+    is.zero <- gene.counts==0
+    if(sum(is.zero) > 0 & !sum(is.zero)==ncol(Z.star)){
+      imputed <- lib.sizes*sum(gene.counts[!is.zero])/sum(lib.sizes[!is.zero])
+      gene.counts[is.zero] <- imputed[is.zero]
+      Z.star[i,] <- gene.counts
+    }
+  }
+  Z.imp <- cbind(Z.imp, Z.star)
+}
+Y.imp <- DGEList(Z.imp, genes=Y$genes)
+
+# normalisation
+mouse.hk <- readRDS("hk-genes_mm.rds")
+genes <- toupper(Y$genes$Symbol)
+neg.ctl <- which(genes %in% mouse.hk)
+M <- replicate.matrix(group)
+k=1
+Y.imp <- calcNormFactors(Y.imp, method="TMM")
+y <- cpm(Y.imp, log=TRUE, prior.count=1)
+out <- .ruvIII(Y=t(y), k=k, M=M, ctl=neg.ctl, return.info=TRUE)
+W <- out$W
+# par(mfcol=c(1,2))
+# Yn <- t(out$newY)
+# RLE <- Yn - rowMedians(Yn)
+# type <- group
+# col.type <- type
+# levels(col.type) <- c("purple2","green2", "orange2")
+# plotPCA(Yn, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(col.type), cex=2, main="PCA (RUV)")
+# boxplot(RLE, col=as.character(col.type), outline=FALSE, names=NULL, main="RLE (RUV)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=1)
+
+# logFC estimation
+X <- model.matrix(~0 + group + W)
+colnames(X) <- c(levels(group), make.names(1:k))
+CM <- makeContrasts(Liver = Liver.TRM - Circ, levels=X)
+y <- new("EList")
+y$E <- cpm(Y.imp, log=TRUE, prior.count=1)
+y$genes <- Y$genes
+fit <- lmFit(y, X)
+fit <- contrasts.fit(fit, contrasts=CM)
+fit <- eBayes(fit, trend=TRUE, robust=TRUE)
+
+Y.2016.liver <- Y
+fit.2016.liver <- fit
+
+```
+
+Man 2017
+```{r, paged.print=F, fig.height=5, fig.width=10}
+# processing
+info <- read.csv("info_man2017.csv", header=TRUE, stringsAsFactors=FALSE)
+Z <- read.table("data_man2017.txt", header=TRUE, stringsAsFactors=FALSE)
+rownames(Z) <- Z$EntrezID
+Z <- Z[,-c(1,2)]
+
+i <- c(which(info$Group=="WT_Chronic_d30"), 
+       which(info$Group=="WT_Acute_d30"))
+info <- info[i,]
+Z <- Z[,i]
+
+group <- factor(info$Group)
+o <- order(group)
+group <- group[o]
+info <- info[o,]
+Z <- Z[,o]
+rownames(info) <- colnames(Z) <- 1:ncol(Z)
+
+# annotation
+NCBI <- read.delim("Mus_musculus.gene_info.gz", header=TRUE, stringsAsFactors=FALSE)
+m <- match(rownames(Z), NCBI$GeneID)
+tab <- NCBI[m, c("GeneID", "Symbol", "Synonyms", "chromosome", "description", "type_of_gene")]
+rownames(tab) <- rownames(Z)
+Y.all <- DGEList(counts=Z, genes=tab)
+
+# filter--gene type
+ObsoleteID <- is.na(Y.all$genes$Symbol)
+rRNA <- Y.all$genes$type_of_gene=="rRNA"
+keep <- !ObsoleteID & !rRNA
+Y.core <- Y.all[keep,,keep.lib.size=FALSE]
+
+# filter--low expression
+L <- list(which(group==levels(group)[1]), 
+          which(group==levels(group)[2]))
+Z <- Y.core$counts
+c <- 10
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(Z[,g]>c)==length(g)}
+keep <- rowSums(KEEP) >= 1 # table(keep)
+Y <- Y.core[keep,,keep.lib.size=FALSE]
+
+# imputation
+L <- list(which(group==levels(group)[1]), 
+          which(group==levels(group)[2]))
+Z <- Y$counts
+Z.imp <- NULL
+for(i in 1:length(L)){
+  g <- L[[i]]
+  Z.star <- Z[,g]
+  lib.sizes <- colSums(Z.star)
+  for(i in 1:nrow(Z.star)){
+    gene.counts <- Z.star[i,]
+    is.zero <- gene.counts==0
+    if(sum(is.zero) > 0 & !sum(is.zero)==ncol(Z.star)){
+      imputed <- lib.sizes*sum(gene.counts[!is.zero])/sum(lib.sizes[!is.zero])
+      gene.counts[is.zero] <- imputed[is.zero]
+      Z.star[i,] <- gene.counts
+    }
+  }
+  Z.imp <- cbind(Z.imp, Z.star)
+}
+Y.imp <- DGEList(Z.imp, genes=Y$genes)
+
+# normalisation
+mouse.hk <- readRDS("hk-genes_mm.rds")
+genes <- toupper(Y$genes$Symbol)
+neg.ctl <- which(genes %in% mouse.hk)
+M <- replicate.matrix(group)
+k=1
+Y.imp <- calcNormFactors(Y.imp, method="TMM")
+y <- cpm(Y.imp, log=TRUE, prior.count=1)
+out <- .ruvIII(Y=t(y), k=k, M=M, ctl=neg.ctl, return.info=TRUE)
+W <- out$W
+# par(mfcol=c(1,2))
+# Yn <- t(out$newY)
+# RLE <- Yn - rowMedians(Yn)
+# type <- group
+# cols.type <- type
+# levels(cols.type) <- brewer.pal("Dark2", n=8)
+# plotPCA(Yn, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(cols.type), cex=2, main="PCA (RUV)")
+# boxplot(RLE, col=as.character(cols.type), outline=FALSE, main="RLE (RUV)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(cols.type), bg="white", cex=0.8)
+
+# logFC estimation 
+X <- model.matrix(~0 + group + W)
+colnames(X) <- c(levels(group), make.names(1:k))
+CM <- makeContrasts(Tex_Tcirc = WT_Chronic_d30 - WT_Acute_d30, levels=X)
+
+y <- new("EList")
+y$E <- cpm(Y.imp, log=TRUE, prior.count=1)
+y$genes <- Y$genes
+fit <- lmFit(y, X)
+fit <- contrasts.fit(fit, contrasts=CM)
+fit <- eBayes(fit, trend=TRUE, robust=TRUE)
+
+Y.man2017 <- Y
+fit.man2017 <- fit
+
+```
+
+Scatter plot
+```{r, paged.print=F, fig.height=4, fig.width=4}
+int <- intersect(rownames(Y.man2017), rownames(Y.2016.skin))
+int <- intersect(int, rownames(Y.2016.liver))
+int <- intersect(int, rownames(Y.2016.gut))
+
+tab <- read.table("list_mackay2016_coreSig.txt", header=TRUE)
+rownames(tab) <- tab$GeneID
+int2 <- intersect(int, tab$GeneID)
+tab <- tab[int2,]
+set.up <- as.character(tab[tab$Direction=="up",]$GeneID)
+set.down <- as.character(tab[tab$Direction=="down",]$GeneID)
+set.both <- c(set.up, set.down)
+
+pch1=16; size1=1; col1="grey"
+pch2=21; size2=3; col2="grey20"; fill.down="#0571b0"; fill.up="#ca0020"
+size3=1
+size4=2; col3="green2"
+xlim=c(-10,10)
+ylim=c(-10,10)
+
+xlab="logFC (Mackay 2016: Pooled Trm v Tcirc)"
+ylab="logFC (Man 2017: Tex v Tcirc)"
+x1 <- fit.2016.skin$coefficients[int,"Skin"]
+x2 <- fit.2016.liver$coefficients[int,"Liver"]
+x3 <- fit.2016.gut$coefficients[int,"Gut"]
+x <- (x1 + x2 + x3)/3
+y <- fit.man2017$coefficients[int,"Tex_Tcirc"]
+
+t=0
+table <- matrix(0, nrow=2, ncol=2)
+table[1,1] <- sum(x >  t & y >  t)
+table[2,2] <- sum(x < -t & y < -t)
+table[1,2] <- sum(x >  t & y < -t)
+table[2,1] <- sum(x < -t & y >  t)
+table
+test <- fisher.test(table)
+p.value <- signif(test$p.value, digits=1)
+
+D <- data.frame(x, y)
+HL.down <- D[set.down,]
+HL.up <- D[set.up,]
+HL.both <- D[set.both,]
+
+ggplot(data=D, mapping=aes(x=x, y=y)) +
+  geom_point(shape=pch1, colour=col1, size=size1, na.rm=TRUE) +
+  geom_point(data=HL.down, shape=pch2, colour=col2, fill=fill.down, size=size2, na.rm=TRUE) +
+  geom_point(data=HL.up, shape=pch2, colour=col2, fill=fill.up, size=size2, na.rm=TRUE) +
+  geom_hline(yintercept=0, linetype=3, colour="black", size=size3) +
+  geom_vline(xintercept=0, linetype=3, colour="black", size=size3) +
+  stat_smooth(method="lm", se=FALSE, colour=col3, size=size4) +
+  scale_x_continuous(lim=xlim) + 
+  scale_y_continuous(lim=ylim) +
+  labs(x=xlab, y=ylab, title=paste("p-value = ", p.value, sep="")) +
+  theme_classic(base_line_size=1) +
+  theme(plot.title=element_text(size=12),
+        axis.title.x=element_text(size=12),
+        axis.title.y=element_text(size=12),
+        axis.text.x=element_text(size=14),
+        axis.text.y=element_text(size=14))
+
+```
