@@ -1,0 +1,704 @@
+```{r}
+options(digits=3, width=100)
+
+library("tidyverse")
+library("RColorBrewer")
+library("ggpubr")
+library("patchwork")
+library("readxl")
+
+library("limma")
+library("edgeR")
+library("ruv")
+library("EDASeq")
+
+library("Seurat")
+library("SingleCellExperiment")
+
+library("genefu")
+library("survival")
+library("survminer")
+library("pROC")
+library("verification")
+
+.ruvIII <- function (Y, M, ctl, k=NULL, eta=NULL,
+                     include.intercept=TRUE,
+                     average=FALSE,
+                     fullalpha=NULL,
+                     return.info=FALSE,
+                     inputcheck=TRUE)
+{
+  tological <- function (ctl, n){
+    ctl2 = rep(FALSE, n)
+    ctl2[ctl] = TRUE
+    return(ctl2)
+  }
+  if (is.data.frame(Y)) Y = data.matrix(Y)
+  m = nrow(Y)
+  n = ncol(Y)
+  M = replicate.matrix(M)
+  ctl = tological(ctl, n)
+  if (inputcheck) {
+    if (m > n)
+    warning("m is greater than n! This is not a problem itself,
+    but may indicate that you need to transpose your data
+    matrix. Please ensure that rows correspond to
+    observations (e.g. microarrays) and columns correspond to
+    features (e.g. genes).")
+    if (sum(is.na(Y)) > 0)
+    warning("Y contains missing values. This is not supported.")
+    if (sum(Y == Inf, na.rm = TRUE) + sum(Y == -Inf, na.rm = TRUE) > 0)
+    warning("Y contains infinities. This is not supported.")
+  }
+  Y = RUV1(Y, eta, ctl, include.intercept = include.intercept)
+  if (ncol(M) >= m) newY = Y
+  else if (is.null(k)) {
+    ycyctinv = solve(Y[, ctl] %*% t(Y[, ctl]))
+    newY = (M %*% solve(t(M) %*% ycyctinv %*% M) %*% (t(M) %*% ycyctinv)) %*% Y
+    fullalpha = NULL
+  }
+  else if (k == 0) {
+    newY = Y
+    fullalpha = NULL
+  }
+  else {
+    if (is.null(fullalpha)) {
+    Y0 = residop(Y, M)
+    fullalpha = t(svd(Y0 %*% t(Y0))$u[, 1:min(m - ncol(M), sum(ctl)), drop = FALSE]) %*% Y
+  }
+  alpha = fullalpha[1:min(k, nrow(fullalpha)), , drop = FALSE]
+  ac = alpha[, ctl, drop = FALSE]
+  W = Y[, ctl] %*% t(ac) %*% solve(ac %*% t(ac))
+  newY = Y - W %*% alpha
+  }
+  if (average) newY = ((1/apply(M, 2, sum)) * t(M)) %*% newY
+  if (!return.info) return(newY)
+  else return(list(
+    newY = newY,
+    M = M,
+    fullalpha = fullalpha,
+    W = W,
+    WA = W %*% alpha,
+    alpha = alpha))
+}
+
+```
+
+Figure 2 l
+```{r, paged.print=F}
+# load data
+D <- read.table("data_METABRIC_microarray.txt", header=TRUE, stringsAsFactors=FALSE, sep="\t")
+info1 <- read.table("data_METABRIC_clinical_patient_v2.txt", header=TRUE, stringsAsFactors=FALSE, sep="\t")
+info2 <- read.table("data_METABRIC_clinical_sample_v2.txt", header=TRUE, stringsAsFactors=FALSE, sep="\t")
+NCBI <- read.delim("Homo_sapiens.gene_info.gz", header=TRUE, stringsAsFactors=FALSE)
+
+# organise
+A <- D[,1:2]
+Y <- D[,3:ncol(D)]
+
+info1[info1==""] <- NA
+info2[info2==""] <- NA
+s1 <- limma::strsplit2(info1$PATIENT_ID, "-")
+s2 <- limma::strsplit2(info2$PATIENT_ID, "-")
+info1$PATIENT_ID <- paste(s1[,1], s1[,2], sep=".")
+info2$PATIENT_ID <- paste(s2[,1], s2[,2], sep=".")
+m1 <- match(colnames(Y), info1$PATIENT_ID)
+m2 <- match(colnames(Y), info2$PATIENT_ID)
+info1 <- info1[m1,]
+info2 <- info2[m2,]
+
+i <- is.na(A$Entrez_Gene_Id)
+Y <- Y[!i,]
+A <- A[!i,]
+i <- duplicated(A$Entrez_Gene_Id)
+Y <- Y[!i,]
+A <- A[!i,]
+rownames(Y) <- A$Entrez_Gene_Id
+Y <- as.matrix(Y)
+
+```
+```{r, paged.print=F, fig.width=15, fig.height=4}
+# TRM
+q <- 0.25
+sig.name <- "TRM-unique"
+sig <- read.table("breast_trm_sig.txt", header=TRUE, stringsAsFactors=FALSE)
+sig$logFC <- ifelse(sig$Direction=="up",1,-1)
+
+sig <- cbind(sig, limma::alias2SymbolUsingNCBI(sig$Gene, NCBI, required.columns=c("GeneID","Symbol")))
+sig <- sig[!is.na(sig$GeneID),]
+  
+for (j in 1:4){
+if (j==1){
+  type <- info2$HER2_STATUS=="Positive" | info2$HER2_STATUS=="Negative"
+  stratification <- "All"}
+if (j==2){
+  type <- info2$HER2_STATUS=="Negative"
+  stratification <- "HER2-"}
+if (j==3){
+  type <- info2$HER2_STATUS=="Negative" & info2$ER_STATUS=="Positive" & info2$PR_STATUS=="Positive"
+  stratification <- "HER2-ER+PR+"}
+if (j==4){
+  type <- info2$HER2_STATUS=="Negative" & info2$ER_STATUS=="Negative" & info2$PR_STATUS=="Negative"
+  stratification <- "HER2-ER-PR-"}
+
+tab1 <- data.frame(probe=sig$GeneID, EntrezGene.ID=sig$GeneID, coefficient=sig$logFC)
+tab2 <- data.frame(probe=A$Entrez_Gene_Id, EntrezGene.ID=A$Entrez_Gene_Id, Symbol=A$Hugo_Symbol)
+out <- sig.score(x=tab1, data=t(Y), annot=tab2, verbose=FALSE)
+scores <- out$score
+
+Y.star <- Y[,type]
+info1.star <- info1[type,]
+info2.star <- info2[type,]
+scores <- scores[type]
+
+time <- info1.star$OS_MONTHS
+event <- info1.star$VITAL_STATUS
+event[event=="Died of Disease"] <- 1
+event[event=="Died of Other Causes"] <- 0
+event[event=="Living"] <- 0
+event <- as.integer(event)
+
+i <- scores < quantile(scores, q) | scores > quantile(scores, 1-q)
+scores2 <- scores[i]
+time2   <- time[i]
+event2  <- event[i]
+
+top <- rep(0, length(event2))
+top[scores2 > quantile(scores, 1-q)] <- 1
+
+km.fit <- survfit(Surv(time=time2, event=event2) ~ top, type="kaplan-meier")
+p <- ggsurvplot(
+  km.fit,
+  data=data.frame(time2, event2, top),
+  conf.int=TRUE,
+  pval=TRUE,
+  ggtheme=theme_survminer(),
+  size=0.6,
+  censor.size=3,
+  palette=c("dodgerblue2", "orchid2"),
+  legend.labs=c("Bottom 25", "Top 25"),
+  legend.title="Signature score",
+  xlab="Time (months)",
+  ylab="Survival probablity",
+  title=stratification)
+
+if(j==1){p1 <- p}
+if(j==2){p2 <- p}
+if(j==3){p3 <- p}
+if(j==4){p4 <- p}
+}
+
+p <- (p1$plot | p2$plot | p3$plot | p4$plot) + plot_layout(nrow=1)
+p + plot_annotation(title=sig.name) & theme(title=element_text(size=15))
+
+```
+```{r, paged.print=F, fig.width=15, fig.height=4}
+# TEX
+q <- 0.25
+sig.name <- "TEX-unique"
+sig <- sig <- read.table("breast_tex_sig.txt", header=TRUE, stringsAsFactors=FALSE)
+sig$logFC <- ifelse(sig$Direction=="up",1,-1)
+
+sig <- cbind(sig, limma::alias2SymbolUsingNCBI(sig$Gene, NCBI, required.columns=c("GeneID","Symbol")))
+sig <- sig[!is.na(sig$GeneID),]
+  
+for (j in 1:4){
+if (j==1){
+  type <- info2$HER2_STATUS=="Positive" | info2$HER2_STATUS=="Negative"
+  stratification <- "All"}
+if (j==2){
+  type <- info2$HER2_STATUS=="Negative"
+  stratification <- "HER2-"}
+if (j==3){
+  type <- info2$HER2_STATUS=="Negative" & info2$ER_STATUS=="Positive" & info2$PR_STATUS=="Positive"
+  stratification <- "HER2-ER+PR+"}
+if (j==4){
+  type <- info2$HER2_STATUS=="Negative" & info2$ER_STATUS=="Negative" & info2$PR_STATUS=="Negative"
+  stratification <- "HER2-ER-PR-"}
+
+tab1 <- data.frame(probe=sig$GeneID, EntrezGene.ID=sig$GeneID, coefficient=sig$logFC)
+tab2 <- data.frame(probe=A$Entrez_Gene_Id, EntrezGene.ID=A$Entrez_Gene_Id, Symbol=A$Hugo_Symbol)
+out <- sig.score(x=tab1, data=t(Y), annot=tab2, verbose=FALSE)
+scores <- out$score
+
+Y.star <- Y[,type]
+info1.star <- info1[type,]
+info2.star <- info2[type,]
+scores <- scores[type]
+
+time <- info1.star$OS_MONTHS
+event <- info1.star$VITAL_STATUS
+event[event=="Died of Disease"] <- 1
+event[event=="Died of Other Causes"] <- 0
+event[event=="Living"] <- 0
+event <- as.integer(event)
+
+i <- scores < quantile(scores, q) | scores > quantile(scores, 1-q)
+scores2 <- scores[i]
+time2   <- time[i]
+event2  <- event[i]
+
+top <- rep(0, length(event2))
+top[scores2 > quantile(scores, 1-q)] <- 1
+
+km.fit <- survfit(Surv(time=time2, event=event2) ~ top, type="kaplan-meier")
+p <- ggsurvplot(
+  km.fit,
+  data=data.frame(time2, event2, top),
+  conf.int=TRUE,
+  pval=TRUE,
+  ggtheme=theme_survminer(),
+  size=0.6,
+  censor.size=3,
+  palette=c("dodgerblue2", "orchid2"),
+  legend.labs=c("Bottom 25", "Top 25"),
+  legend.title="Signature score",
+  xlab="Time (months)",
+  ylab="Survival probablity",
+  title=stratification)
+
+if(j==1){p1 <- p}
+if(j==2){p2 <- p}
+if(j==3){p3 <- p}
+if(j==4){p4 <- p}
+}
+
+p <- (p1$plot | p2$plot | p3$plot | p4$plot) + plot_layout(nrow=1)
+p + plot_annotation(title=sig.name) & theme(title=element_text(size=15))
+
+```
+```{r, paged.print=F, fig.width=15, fig.height=4}
+# TRM-TEX-union
+q <- 0.25
+sig.name <- "TRM-TEX-union"
+sig <- read.table("breast_trm-union-vs-all_sig.txt", header=TRUE, stringsAsFactors=FALSE)
+sig$logFC <- ifelse(sig$Direction=="up",1,-1)
+
+sig <- cbind(sig, limma::alias2SymbolUsingNCBI(sig$Gene, NCBI, required.columns=c("GeneID","Symbol")))
+sig <- sig[!is.na(sig$GeneID),]
+
+for (j in 1:4){
+if (j==1){
+  type <- info2$HER2_STATUS=="Positive" | info2$HER2_STATUS=="Negative"
+  stratification <- "All"}
+if (j==2){
+  type <- info2$HER2_STATUS=="Negative"
+  stratification <- "HER2-"}
+if (j==3){
+  type <- info2$HER2_STATUS=="Negative" & info2$ER_STATUS=="Positive" & info2$PR_STATUS=="Positive"
+  stratification <- "HER2-ER+PR+"}
+if (j==4){
+  type <- info2$HER2_STATUS=="Negative" & info2$ER_STATUS=="Negative" & info2$PR_STATUS=="Negative"
+  stratification <- "HER2-ER-PR-"}
+
+tab1 <- data.frame(probe=sig$GeneID, EntrezGene.ID=sig$GeneID, coefficient=sig$logFC)
+tab2 <- data.frame(probe=A$Entrez_Gene_Id, EntrezGene.ID=A$Entrez_Gene_Id, Symbol=A$Hugo_Symbol)
+out <- sig.score(x=tab1, data=t(Y), annot=tab2, verbose=FALSE)
+scores <- out$score
+
+Y.star <- Y[,type]
+info1.star <- info1[type,]
+info2.star <- info2[type,]
+scores <- scores[type]
+
+time <- info1.star$OS_MONTHS
+event <- info1.star$VITAL_STATUS
+event[event=="Died of Disease"] <- 1
+event[event=="Died of Other Causes"] <- 0
+event[event=="Living"] <- 0
+event <- as.integer(event)
+
+i <- scores < quantile(scores, q) | scores > quantile(scores, 1-q)
+scores2 <- scores[i]
+time2   <- time[i]
+event2  <- event[i]
+
+top <- rep(0, length(event2))
+top[scores2 > quantile(scores, 1-q)] <- 1
+
+km.fit <- survfit(Surv(time=time2, event=event2) ~ top, type="kaplan-meier")
+p <- ggsurvplot(
+  km.fit,
+  data=data.frame(time2, event2, top),
+  conf.int=TRUE,
+  pval=TRUE,
+  ggtheme=theme_survminer(),
+  size=0.6,
+  censor.size=3,
+  palette=c("dodgerblue2", "orchid2"),
+  legend.labs=c("Bottom 25", "Top 25"),
+  legend.title="Signature score",
+  xlab="Time (months)",
+  ylab="Survival probablity",
+  title=stratification)
+
+if(j==1){p1 <- p}
+if(j==2){p2 <- p}
+if(j==3){p3 <- p}
+if(j==4){p4 <- p}
+}
+
+p <- (p1$plot | p2$plot | p3$plot | p4$plot) + plot_layout(nrow=1)
+p + plot_annotation(title=sig.name) & theme(title=element_text(size=15))
+
+```
+
+Figure 2 m
+```{r, paged.print=F}
+# load data and organise
+ya <- read.table("GSE194040_GPL30493_probe_small.txt", header=TRUE, sep="\t")
+yb <- read.table("GSE194040_GPL20078_probe_big.txt", header=TRUE, sep="\t")
+Aa <- read.table("anno_GPL30493.txt", header=TRUE, sep="\t")
+Ab <- read.table("anno_GPL20078.txt", header=TRUE, sep="\t")
+NCBI <- read.delim("Homo_sapiens.gene_info.gz", header=TRUE, stringsAsFactors=FALSE)
+
+info <- readxl::read_xlsx("clinical_info.xlsx", skip=1)
+info <- as.data.frame(info)
+
+info$`Patient Identifier` <- paste("X",info$`Patient Identifier`,sep="")
+info <- info[!grepl("629606",info$`Patient Identifier`),]
+ya <- ya[,!grepl("629606", colnames(ya))]
+yb <- yb[,!grepl("629606", colnames(yb))]
+
+info$batch <- "batch"
+i1 <- info$`Patient Identifier` %in% colnames(ya)
+i2 <- info$`Patient Identifier` %in% colnames(yb)
+info$batch[i1] <- "batch_A"
+info$batch[i2] <- "batch_B"
+
+# average repeated probes targeting the same gene, and impute missing values
+ya <- as.matrix(ya)
+yb <- as.matrix(yb)
+m1 <- match(rownames(ya), Aa$ID)
+m2 <- match(rownames(yb), Ab$ID)
+rownames(ya) <- Aa[m1,]$GeneName
+rownames(yb) <- Ab[m2,]$GeneName
+
+ya <- limma::avereps(ya, ID=rownames(ya))
+yb <- limma::avereps(yb, ID=rownames(yb))
+for(i in 1:nrow(ya)){
+  row <- ya[i,]
+  missing <- is.na(row)
+  if (any(missing)==TRUE){
+    row[missing] <- mean(row, na.rm=TRUE)
+    ya[i,] <- row
+  }
+}
+for(i in 1:nrow(yb)){
+  row <- yb[i,]
+  missing <- is.na(row)
+  if (any(missing)==TRUE){
+    row[missing] <- mean(row, na.rm=TRUE)
+    yb[i,] <- row
+  }
+}
+
+# more organising
+ya <- ya[!rownames(ya)=="",]
+yb <- yb[!rownames(yb)=="",]
+i <- intersect(rownames(ya),rownames(yb))
+y <- cbind(ya[i,], yb[i,])
+
+m <- match(info$`Patient Identifier`, colnames(y))
+y <- y[,m]
+
+y.store <- y
+info.store <- info
+
+```
+```{r, paged.print=F, fig.width=10, fig.height=5}
+# platform 1
+y <- y.store
+info <- info.store
+i <- info$batch=="batch_A"
+y <- y[,i]
+info <- info[i,]
+i <- info$`Arm (short name)` %in% c("Ctr", "Pembro")
+y <- y[,i]
+info <- info[i,]
+
+rle.med <- colMedians(y - matrixStats::rowMedians(y))
+o <- order(rle.med)
+y <- y[,o]
+info <- info[o,]
+
+n.batches=3
+pseudobatch.ids <- cut(1:length(rle.med), breaks=n.batches, labels=FALSE)
+info$pseudobatch <- "pseudobatch"
+for (i in 1:length(unique(pseudobatch.ids))){info[pseudobatch.ids==i,]$pseudobatch <- paste0("pseudobatch",i)}
+
+# table(info$`Arm (short name)`, info$PAM50.Subtype, info$pseudobatch)
+# RLE <- y - matrixStats::rowMedians(y)
+# type <- factor(info$pseudobatch)
+# cols.type <- type
+# levels(cols.type) <- brewer.pal("Dark2",n=8)
+# par(mfcol=c(1,1))
+# boxplot(RLE, col=as.character(cols.type), outline=FALSE, names=FALSE, main="RLE")
+# abline(h=0, lty=3, lwd=2, col="grey20")
+# legend("bottomright", legend=levels(type), fill=levels(cols.type), cex=0.75)
+
+batch <- info$pseudobatch
+biology1 <- info$`Arm (short name)`
+biology2 <- info$PAM50.Subtype
+
+batch.names <- unique(info$pseudobatch)
+biology1.names <- unique(info$`Arm (short name)`)
+biology2.names <- c("Basal", "Her2", "LumA", "LumB")
+
+size=5
+D.ps <- NULL
+group.ps <- c()
+batch.ps <- c()
+for (g1 in batch.names){
+for (g2 in biology1.names){
+for (g3 in biology2.names){
+  ids <- which(batch==g1 & biology1==g2 & biology2==g3)
+  n <- length(ids)
+  if (n >= size & n < size*2){
+    j <- sample(ids, size=size, replace=FALSE)
+    ps <- rowMeans(data.frame(y[,j]))
+    D.ps <- cbind(D.ps, ps)
+    group.ps <- c(group.ps, paste0(g2,".",g3))
+    batch.ps <- c(batch.ps, paste0("A_",g1))}
+  if (n >= size*2){
+    j <- ids[1:size]
+    ps <- rowMeans(data.frame(y[,j]))
+    D.ps <- cbind(D.ps, ps)
+    group.ps <- c(group.ps, paste0(g2,".",g3))
+    batch.ps <- c(batch.ps, paste0("A_",g1))
+    j <- ids[(length(ids)-size+1):length(ids)]
+    ps <- rowMeans(data.frame(y[,j]))
+    D.ps <- cbind(D.ps, ps)
+    group.ps <- c(group.ps, paste0(g2,".",g3))
+    batch.ps <- c(batch.ps, paste0("A_",g1))
+    }
+}  
+}
+}
+
+D.ps.A <- D.ps
+group.ps.A <- group.ps
+batch.ps.A <- batch.ps
+
+```
+```{r, paged.print=F, fig.width=10, fig.height=5}
+# platform 2
+y <- y.store
+info <- info.store
+i <- info$batch=="batch_B"
+y <- y[,i]
+info <- info[i,]
+i <- info$`Arm (short name)` %in% c("Ctr", "Pembro")
+y <- y[,i]
+info <- info[i,]
+
+rle.med <- colMedians(y - matrixStats::rowMedians(y))
+o <- order(rle.med)
+y <- y[,o]
+info <- info[o,]
+
+n.batches=3
+pseudobatch.ids <- cut(1:length(rle.med), breaks=n.batches, labels=FALSE)
+info$pseudobatch <- "pseudobatch"
+for (i in 1:length(unique(pseudobatch.ids))){info[pseudobatch.ids==i,]$pseudobatch <- paste0("pseudobatch",i)}
+
+# table(info$`Arm (short name)`, info$PAM50.Subtype, info$pseudobatch)
+# RLE <- y - matrixStats::rowMedians(y)
+# type <- factor(info$pseudobatch)
+# cols.type <- type
+# levels(cols.type) <- brewer.pal("Dark2",n=8)
+# par(mfcol=c(1,1))
+# boxplot(RLE, col=as.character(cols.type), outline=FALSE, names=FALSE, main="RLE")
+# abline(h=0, lty=3, lwd=2, col="grey20")
+# legend("bottomright", legend=levels(type), fill=levels(cols.type), cex=0.75)
+
+batch <- info$pseudobatch
+biology1 <- info$`Arm (short name)`
+biology2 <- info$PAM50.Subtype
+
+batch.names <- unique(info$pseudobatch)
+biology1.names <- unique(info$`Arm (short name)`)
+biology2.names <- c("Basal", "Her2", "LumA", "LumB")
+
+size=5
+D.ps <- NULL
+group.ps <- c()
+batch.ps <- c()
+for (g1 in batch.names){
+for (g2 in biology1.names){
+for (g3 in biology2.names){
+  ids <- which(batch==g1 & biology1==g2 & biology2==g3)
+  n <- length(ids)
+  if (n >= size & n < size*2){
+    j <- sample(ids, size=size, replace=FALSE)
+    ps <- rowMeans(data.frame(y[,j]))
+    D.ps <- cbind(D.ps, ps)
+    group.ps <- c(group.ps, paste0(g2,".",g3))
+    batch.ps <- c(batch.ps, paste0("B_",g1))}
+  if (n >= size*2){
+    j <- ids[1:size]
+    ps <- rowMeans(data.frame(y[,j]))
+    D.ps <- cbind(D.ps, ps)
+    group.ps <- c(group.ps, paste0(g2,".",g3))
+    batch.ps <- c(batch.ps, paste0("B_",g1))
+    j <- ids[(length(ids)-size+1):length(ids)]
+    ps <- rowMeans(data.frame(y[,j]))
+    D.ps <- cbind(D.ps, ps)
+    group.ps <- c(group.ps, paste0(g2,".",g3))
+    batch.ps <- c(batch.ps, paste0("B_",g1))
+    }
+}  
+}
+}
+
+D.ps.B <- D.ps
+group.ps.B <- group.ps
+batch.ps.B <- batch.ps
+
+```
+```{r, paged.print=F, fig.width=10, fig.height=5}
+# integration
+y <- y.store
+info <- info.store
+i <- info$`Arm (short name)` %in% c("Ctr", "Pembro") # sum(i)
+y <- y[,i]
+info <- info[i,]
+
+D.ps <- cbind(D.ps.A, D.ps.B)
+group.ps <- c(group.ps.A, group.ps.B)
+y.star <- cbind(y, D.ps)
+group.star <- factor(c(1:nrow(info), group.ps))
+
+neg.ctl <- 1:nrow(y)
+M <- replicate.matrix(group.star)
+k=7
+out <- .ruvIII(Y=t(y.star), k=k, M=M, ctl=neg.ctl, return.info=TRUE)
+yn <- t(out$newY)
+
+# par(mfcol=c(1,2))
+# yn.ps <- yn[,group.star %in% group.ps]
+# RLE <- yn.ps - rowMedians(yn.ps)
+# boxplot(RLE, outline=FALSE, names=FALSE, main="Pseudo-samples (ncg=all)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# 
+# yn.star <- yn[,!group.star %in% group.ps]
+# yn.star <- yn.star[,!info$PAM50.Subtype %in% c("NA","Normal")]
+
+# par(mfcol=c(1,1))
+# RLE <- yn.star - rowMedians(yn.star)
+# type <- factor(info$batch[!info$PAM50.Subtype %in% c("NA","Normal")])
+# cols.type <- type
+# levels(cols.type) <- c("green2","purple2")
+# boxplot(RLE, col=as.character(cols.type), outline=FALSE, names=FALSE, main="RLE (ncg=all)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomleft", legend=levels(type), fill=levels(cols.type), cex=0.75)
+# 
+# par(mfcol=c(1,2))
+# type <- factor(info$batch[!info$PAM50.Subtype %in% c("NA","Normal")])
+# cols.type <- type
+# levels(cols.type) <- c("green2","purple2")
+# plotPCA(yn.star, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(cols.type), cex=2, main="PCA (ncg=all)")
+# legend("bottomleft", legend=levels(type), fill=levels(cols.type), cex=0.75)
+# 
+# type <- factor(info$PAM50.Subtype[!info$PAM50.Subtype %in% c("NA","Normal")])
+# cols.type <- type
+# levels(cols.type) <- brewer.pal("Dark2",n=8)
+# plotPCA(yn.star, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(cols.type), cex=2, main="PCA (ncg=all)")
+# legend("bottomleft", legend=levels(type), fill=levels(cols.type), cex=0.75)
+
+```
+```{r, paged.print=F, fig.width=12, fig.height=4}
+# ROC analysis
+yn <- yn[,!group.star %in% group.ps]
+
+par(mfrow=c(1,3))
+for (i in 1:3){
+if (i==1){
+  sig <- read.table("breast_trm_sig.txt", header=TRUE, stringsAsFactors=FALSE)
+  title1="TRM-unique:"}
+if (i==2){
+  sig <- read.table("breast_tex_sig.txt", header=TRUE, stringsAsFactors=FALSE)
+  title1="TEX-unique:"}
+if (i==3){
+  sig <- read.table("breast_trm-union-vs-all_sig.txt", header=TRUE, stringsAsFactors=FALSE)
+  title1="Union-B:"}
+
+sig$logFC <- ifelse(sig$Direction=="up",1,-1)
+sig <- cbind(sig, limma::alias2SymbolUsingNCBI(sig$Gene, NCBI, required.columns=c("GeneID","Symbol")))
+
+i1 <- info$`Arm (short name)`=="Ctr"
+i2 <- info$`Arm (short name)`=="Pembro"
+title2="all samples"
+# i1 <- info$`Arm (short name)`=="Ctr"    & info$HER2==0
+# i2 <- info$`Arm (short name)`=="Pembro" & info$HER2==0
+# title2="HER2-"
+# i1 <- info$`Arm (short name)`=="Ctr"    & info$HER2==0 & info$HR==0
+# i2 <- info$`Arm (short name)`=="Pembro" & info$HER2==0 & info$HR==0
+# title2="HER2-HR-"
+# i1 <- info$`Arm (short name)`=="Ctr"    & info$HER2==0 & info$HR==1
+# i2 <- info$`Arm (short name)`=="Pembro" & info$HER2==0 & info$HR==1
+# title2="HER2-HR+"
+
+D.c <- yn[,i1]
+D.t <- yn[,i2]
+info.c <- data.frame(pCR=as.integer(info[i1,"pCR"]))
+info.t <- data.frame(pCR=as.integer(info[i2,"pCR"]))
+
+x <- data.frame(probe=sig$Symbol, EntrezGene.ID=sig$Symbol, coefficient=sig$logFC)
+annot <- data.frame(probe=rownames(D.c), EntrezGene.ID=rownames(D.c), Symbol=rownames(D.c))
+out <- genefu::sig.score(x=x, data=t(D.c), annot=annot, verbose=FALSE)
+info.c$scores <- out$score
+info.c$pp <- rank(info.c$scores)/nrow(info.c)
+
+annot <- data.frame(probe=rownames(D.t), EntrezGene.ID=rownames(D.t), Symbol=rownames(D.t))
+out <- genefu::sig.score(x=x, data=t(D.t), annot=annot, verbose=FALSE)
+info.t$scores <- out$score
+info.t$pp <- rank(info.t$scores)/nrow(info.t)
+
+par(pty="s")
+title=paste(title1, title2)
+xlab="1 - Specificity (false positive rate)"
+ylab="Sensitivity (true postive rate)"
+col1="grey40"
+col2="orange"
+
+roc.c <- pROC::roc(info.c$pCR, info.c$pp)
+roc.t <- pROC::roc(info.t$pCR, info.t$pp)
+testobj <- roc.test(roc.c, roc.t)
+
+out1 <- verification::roc.area(info.c$pCR, info.c$pp)
+out2 <- verification::roc.area(info.t$pCR, info.t$pp)
+p.value1 <- out1$p.value
+p.value2 <- out2$p.value
+
+pROC::plot.roc(
+  roc.c,
+  legacy.axes=TRUE, 
+  # print.auc=TRUE,
+  xlab=xlab, 
+  ylab=ylab, 
+  col=col1, 
+  lwd=4,
+  # print.auc.x=0.4,
+  # print.auc.y=0.4,
+  main=title
+  )
+pROC::plot.roc(
+  roc.t, 
+  legacy.axes=TRUE, 
+  # print.auc=TRUE, 
+  xlab=xlab, 
+  ylab=ylab, 
+  col=col2, 
+  lwd=4, 
+  add=TRUE, 
+  # print.auc.x=0.4,
+  # print.auc.y=0.34
+  )
+legend("bottomright", legend=c("Control", "Treatment"), col=c(col1,col2), lwd=4, cex=0.8)
+text(x=0.8, y=1, labels=paste("p-value =", format.pval(p.value1)), col=col1)
+text(x=0.8, y=0.94, labels=paste("p-value =", format.pval(p.value2)), col=col2)
+text(x=0.21, y=0.25, labels=paste("p-value =", format.pval(testobj$p.value)), col="purple3")
+}
+
+```
