@@ -1,0 +1,202 @@
+```{r}
+options(digits=3, width=100)
+
+library("tidyverse")
+library("RColorBrewer")
+library("ggpubr")
+library("patchwork")
+library("readxl")
+
+library("limma")
+library("edgeR")
+library("ruv")
+library("EDASeq")
+
+library("Seurat")
+library("SingleCellExperiment")
+
+library("genefu")
+library("survival")
+library("survminer")
+library("pROC")
+library("verification")
+
+.ruvIII <- function (Y, M, ctl, k=NULL, eta=NULL,
+                     include.intercept=TRUE,
+                     average=FALSE,
+                     fullalpha=NULL,
+                     return.info=FALSE,
+                     inputcheck=TRUE)
+{
+  tological <- function (ctl, n){
+    ctl2 = rep(FALSE, n)
+    ctl2[ctl] = TRUE
+    return(ctl2)
+  }
+  if (is.data.frame(Y)) Y = data.matrix(Y)
+  m = nrow(Y)
+  n = ncol(Y)
+  M = replicate.matrix(M)
+  ctl = tological(ctl, n)
+  if (inputcheck) {
+    if (m > n)
+    warning("m is greater than n! This is not a problem itself,
+    but may indicate that you need to transpose your data
+    matrix. Please ensure that rows correspond to
+    observations (e.g. microarrays) and columns correspond to
+    features (e.g. genes).")
+    if (sum(is.na(Y)) > 0)
+    warning("Y contains missing values. This is not supported.")
+    if (sum(Y == Inf, na.rm = TRUE) + sum(Y == -Inf, na.rm = TRUE) > 0)
+    warning("Y contains infinities. This is not supported.")
+  }
+  Y = RUV1(Y, eta, ctl, include.intercept = include.intercept)
+  if (ncol(M) >= m) newY = Y
+  else if (is.null(k)) {
+    ycyctinv = solve(Y[, ctl] %*% t(Y[, ctl]))
+    newY = (M %*% solve(t(M) %*% ycyctinv %*% M) %*% (t(M) %*% ycyctinv)) %*% Y
+    fullalpha = NULL
+  }
+  else if (k == 0) {
+    newY = Y
+    fullalpha = NULL
+  }
+  else {
+    if (is.null(fullalpha)) {
+    Y0 = residop(Y, M)
+    fullalpha = t(svd(Y0 %*% t(Y0))$u[, 1:min(m - ncol(M), sum(ctl)), drop = FALSE]) %*% Y
+  }
+  alpha = fullalpha[1:min(k, nrow(fullalpha)), , drop = FALSE]
+  ac = alpha[, ctl, drop = FALSE]
+  W = Y[, ctl] %*% t(ac) %*% solve(ac %*% t(ac))
+  newY = Y - W %*% alpha
+  }
+  if (average) newY = ((1/apply(M, 2, sum)) * t(M)) %*% newY
+  if (!return.info) return(newY)
+  else return(list(
+    newY = newY,
+    M = M,
+    fullalpha = fullalpha,
+    W = W,
+    WA = W %*% alpha,
+    alpha = alpha))
+}
+
+```
+
+```{r, paged.print=F, fig.width=9, fig.height=9}
+# load data and organise
+seu <- readRDS("breast.Rds")
+
+clusters <- as.character(seu$seurat_clusters)
+clusters[clusters=="0"] <- "TRM1"
+clusters[clusters=="5"] <- "TRM2"
+clusters[clusters=="7"] <- "TEX1"
+clusters[clusters=="12"] <- "TEX2"
+clusters[clusters=="15"] <- "TEX3"
+clusters[clusters=="2"] <- "TEM1"
+clusters[clusters=="3"] <- "TEM2"
+clusters[clusters=="4"] <- "TEM3"
+clusters[clusters=="9"] <- "TEM4"
+clusters[clusters=="11"] <- "TEM5"
+clusters[clusters=="1"] <- "TEMRA1"
+clusters[clusters=="6"] <- "TEMRA2"
+clusters[clusters=="10"] <- "TEMRA3"
+clusters[clusters=="8"] <- "gdT"
+clusters[clusters=="13"] <- "MAIT"
+clusters[clusters=="14"] <- "UK"
+
+# TRM signature
+seu <- AddModuleScore(seu, assay="SCT", features=list(breast.trm.down), name="ams")
+scores1 <- scale(seu$ams1, center=TRUE, scale=TRUE)
+seu <- AddModuleScore(seu, assay="SCT", features=list(breast.trm.up), name="ams")
+scores2 <- scale(seu$ams1, center=TRUE, scale=TRUE)
+seu$ams1 <- ((-1)*scores1 + scores2)/2
+scores <- seu$ams1
+
+alpha=0.01
+p1a <- Seurat::FeaturePlot(
+  seu,
+  features="ams1",
+  reduction="wnn.harmony.umap",
+  label=TRUE,
+  pt.size=1,
+  min.cutoff=quantile(scores, alpha/2),
+  max.cutoff=quantile(scores, 1-alpha/2)
+  ) +
+  scale_colour_gradientn(
+    colours=rev(brewer.pal(11, "RdYlBu")),
+    guide=guide_colorbar(
+      direction="horizontal",
+      barwidth=unit(0.5, units="npc"),
+      barheight=unit(0.02, units="npc"),
+      title="",
+      title.position="left"
+      )
+    ) +
+  theme(legend.position="bottom") +
+  ggtitle("TRM down+up signature")
+
+df1 <- data.frame(meta.cluster="TRM", scores=scores[clusters %in% c("TRM1","TRM2")])
+df2 <- data.frame(meta.cluster="TEX", scores=scores[clusters %in% c("TEX1","TEX2","TEX3")])
+df <- rbind(df1,df)
+df$meta.cluster <- factor(df$meta.cluster, levels=c("TRM","TEX"))
+p1b <-ggplot(
+  data=df, 
+  mapping=aes(x=meta.cluster, y=scores, fill=meta.cluster))+
+  geom_boxplot() +
+  labs(title="TRM down+up signature", x="Meta cluster", y="Signature scores") +
+  theme(axis.text=element_text(size=12), 
+        axis.title=element_text(size=14), 
+        legend.position="none")
+
+# TEX signature
+seu <- AddModuleScore(seu, assay="SCT", features=list(breast.tex.down), name="ams")
+scores1 <- scale(seu$ams1, center=TRUE, scale=TRUE)
+seu <- AddModuleScore(seu, assay="SCT", features=list(breast.tex.up), name="ams")
+scores2 <- scale(seu$ams1, center=TRUE, scale=TRUE)
+seu$ams1 <- ((-1)*scores1 + scores2)/2
+scores <- seu$ams1
+
+alpha=0.01
+p2a <- Seurat::FeaturePlot(
+  seu,
+  features="ams1",
+  reduction="wnn.harmony.umap",
+  label=TRUE,
+  pt.size=1,
+  min.cutoff=quantile(scores, alpha/2),
+  max.cutoff=quantile(scores, 1-alpha/2)
+  ) +
+  scale_colour_gradientn(
+    colours=rev(brewer.pal(11, "RdYlBu")),
+    guide=guide_colorbar(
+      direction="horizontal",
+      barwidth=unit(0.5, units="npc"),
+      barheight=unit(0.02, units="npc"),
+      title="",
+      title.position="left"
+      )
+    ) +
+  theme(legend.position="bottom") +
+  ggtitle("TEX down+up signature")
+
+df1 <- data.frame(meta.cluster="TRM", scores=scores[clusters %in% c("TRM1","TRM2")])
+df2 <- data.frame(meta.cluster="TEX", scores=scores[clusters %in% c("TEX1","TEX2","TEX3")])
+df <- rbind(df1,df2)
+df$meta.cluster <- factor(df$meta.cluster, levels=c("TRM","TEX"))
+p2b <-ggplot(
+  data=df, 
+  mapping=aes(x=meta.cluster, y=scores, fill=meta.cluster))+
+  geom_boxplot() +
+  labs(title="TEX down+up signature", x="Meta cluster", y="Signature scores") +
+  theme(axis.text=element_text(size=12), 
+        axis.title=element_text(size=14), 
+        legend.position="none")
+
+# plots
+ggarrange(p1a, p2a,
+          p1b, p2b, 
+          nrow=2, ncol=2)
+
+```
