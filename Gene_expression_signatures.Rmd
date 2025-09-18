@@ -1,0 +1,693 @@
+```{r}
+options(digits=3, width=100)
+
+library("tidyverse")
+library("RColorBrewer")
+library("ggpubr")
+library("patchwork")
+library("readxl")
+
+library("limma")
+library("edgeR")
+library("ruv")
+library("EDASeq")
+
+library("Seurat")
+library("SingleCellExperiment")
+
+library("genefu")
+library("survival")
+library("survminer")
+library("pROC")
+library("verification")
+
+.ruvIII <- function (Y, M, ctl, k=NULL, eta=NULL,
+                     include.intercept=TRUE,
+                     average=FALSE,
+                     fullalpha=NULL,
+                     return.info=FALSE,
+                     inputcheck=TRUE)
+{
+  tological <- function (ctl, n){
+    ctl2 = rep(FALSE, n)
+    ctl2[ctl] = TRUE
+    return(ctl2)
+  }
+  if (is.data.frame(Y)) Y = data.matrix(Y)
+  m = nrow(Y)
+  n = ncol(Y)
+  M = replicate.matrix(M)
+  ctl = tological(ctl, n)
+  if (inputcheck) {
+    if (m > n)
+    warning("m is greater than n! This is not a problem itself,
+    but may indicate that you need to transpose your data
+    matrix. Please ensure that rows correspond to
+    observations (e.g. microarrays) and columns correspond to
+    features (e.g. genes).")
+    if (sum(is.na(Y)) > 0)
+    warning("Y contains missing values. This is not supported.")
+    if (sum(Y == Inf, na.rm = TRUE) + sum(Y == -Inf, na.rm = TRUE) > 0)
+    warning("Y contains infinities. This is not supported.")
+  }
+  Y = RUV1(Y, eta, ctl, include.intercept = include.intercept)
+  if (ncol(M) >= m) newY = Y
+  else if (is.null(k)) {
+    ycyctinv = solve(Y[, ctl] %*% t(Y[, ctl]))
+    newY = (M %*% solve(t(M) %*% ycyctinv %*% M) %*% (t(M) %*% ycyctinv)) %*% Y
+    fullalpha = NULL
+  }
+  else if (k == 0) {
+    newY = Y
+    fullalpha = NULL
+  }
+  else {
+    if (is.null(fullalpha)) {
+    Y0 = residop(Y, M)
+    fullalpha = t(svd(Y0 %*% t(Y0))$u[, 1:min(m - ncol(M), sum(ctl)), drop = FALSE]) %*% Y
+  }
+  alpha = fullalpha[1:min(k, nrow(fullalpha)), , drop = FALSE]
+  ac = alpha[, ctl, drop = FALSE]
+  W = Y[, ctl] %*% t(ac) %*% solve(ac %*% t(ac))
+  newY = Y - W %*% alpha
+  }
+  if (average) newY = ((1/apply(M, 2, sum)) * t(M)) %*% newY
+  if (!return.info) return(newY)
+  else return(list(
+    newY = newY,
+    M = M,
+    fullalpha = fullalpha,
+    W = W,
+    WA = W %*% alpha,
+    alpha = alpha))
+}
+
+```
+
+Breast: TRM, TEX, and intersection signatures (Figure 2A and 2J)
+```{r, paged.print=F, fig.width=10, fig.height=5}
+# load data
+seu <- readRDS("breast.Rds")
+
+# processing + pseudo-bulking
+clusters <- as.character(seu$seurat_clusters)
+clusters[clusters=="0"] <- "TRM1"
+clusters[clusters=="5"] <- "TRM2"
+clusters[clusters=="7"] <- "TEX1"
+clusters[clusters=="12"] <- "TEX2"
+clusters[clusters=="15"] <- "TEX3"
+clusters[clusters=="2"] <- "TEM1"
+clusters[clusters=="3"] <- "TEM2"
+clusters[clusters=="4"] <- "TEM3"
+clusters[clusters=="9"] <- "TEM4"
+clusters[clusters=="11"] <- "TEM5"
+clusters[clusters=="1"] <- "TEMRA1"
+clusters[clusters=="6"] <- "TEMRA2"
+clusters[clusters=="10"] <- "TEMRA3"
+clusters[clusters=="8"] <- "gdT"
+clusters[clusters=="13"] <- "MAIT"
+clusters[clusters=="14"] <- "UK"
+cluster.names <- c(
+  "TRM1",
+  "TRM2",
+  "TEX1",
+  "TEX2",
+  "TEX3",
+  "TEM1",
+  "TEM2",
+  "TEM3",
+  "TEM4",
+  "TEM5",
+  "TEMRA1",
+  "TEMRA2",
+  "TEMRA3",
+  "gdT",
+  "MAIT",
+  "UK")
+
+donors <- seu$donor
+donor.names <- c("BC07","BC08","BC09","BC10","BC12","BCXX","BCYY","BCZZ")
+
+min.cells=20
+tab <- table(donors, clusters)
+tab <- tab[,cluster.names]
+
+Z.sc <- as.matrix(seu[["RNA"]]@counts)
+Z.pb <- matrix(0, nrow(Z.sc), ncol=sum(tab > min.cells))
+group1 <- c()
+group3 <- c()
+c <- 0
+for (j1 in 1:length(cluster.names)){
+  for (j2 in 1:length(donor.names)){
+    j <- which(clusters==cluster.names[j1] & donors==donor.names[j2])
+    if(length(j) > min.cells){
+      c <- c + 1
+      group1 <- c(group1, cluster.names[j1])
+      group3 <- c(group3, donor.names[j2])
+      Z.pb[,c] <- rowSums(Z.sc[,j])
+    }
+  }
+}
+
+group2 <- group1
+group2[group2=="TRM1"] <- "TRM"
+group2[group2=="TRM2"] <- "TRM"
+group2[group2=="TEX1"] <- "TEX"
+group2[group2=="TEX2"] <- "TEX"
+group2[group2=="TEX3"] <- "TEX"
+group2[group2=="TEM1"] <- "TEM"
+group2[group2=="TEM2"] <- "TEM"
+group2[group2=="TEM3"] <- "TEM"
+group2[group2=="TEM4"] <- "TEM"
+group2[group2=="TEM5"] <- "TEM"
+group2[group2=="TEMRA1"] <- "TEMRA"
+group2[group2=="TEMRA2"] <- "TEMRA"
+group2[group2=="TEMRA3"] <- "TEMRA"
+group2[group2=="gdT"] <- "gdT"
+group2[group2=="MAIT"] <- "MAIT"
+data.frame(group1, group2, group3)
+
+group1 <- factor(group1)
+group2 <- factor(group2)
+group3 <- factor(group3)
+
+Y <- DGEList(counts=Z.pb, genes=rownames(Z.sc))
+rownames(Y) <- rownames(Z.sc)
+
+# filtering--low expression
+L <- list(
+  which(group2=="TRM"),
+  which(group2=="TEX"),
+  which(group2=="TEM"),
+  which(group2=="TEMRA"),
+  which(group2=="gdT"),
+  which(group2=="MAIT")
+  )
+Z <- Y$counts
+c <- 5
+s <- 2
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(data.frame(Z[,g]>c))>=s}
+keep <- rowSums(KEEP) >= 1
+Y <- Y[keep,,keep.lib.size=FALSE]
+
+# filtering--gene type
+i1 <- grepl("HLA", Y$genes$genes)
+i2 <- grepl("TRB", Y$genes$genes)
+i3 <- grepl("TRA", Y$genes$genes)
+i4 <- grepl("TRG", Y$genes$genes)
+i5 <- grepl("TRD", Y$genes$genes)
+i6 <- grepl(".", fixed=TRUE, Y$genes$genes)
+i <- i1 | i2 | i3 | i4 | i5 | i6
+Y <- Y[!i,,keep.lib.size=FALSE]
+
+# normalisation
+D <- readRDS("hk-genes_hs.rds")
+gene.names <- D$gene_name.
+hk.status <- D$rnaseq.hk=="yes"
+hk.genes <- gene.names[hk.status]
+neg.ctl <- which(toupper(Y$genes$genes) %in% toupper(hk.genes))
+
+k=20
+M <- replicate.matrix(group2)
+out <- .ruvIII(Y=log2(t(Y$counts) + 1/2), k=k, M=M, ctl=neg.ctl, return.info=TRUE)
+W <- out$W
+# par(mfcol=c(1,2))
+# Yn <- t(out$newY)
+# RLE <- Yn - rowMedians(Yn)
+# type <- group2
+# col.type <- type
+# levels(col.type) <- brewer.pal("Dark2", n=8)
+# plotPCA(Yn, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(col.type), cex=2, main="PCA")
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=0.8)
+# boxplot(RLE, outline=FALSE, names=NULL, col=as.character(col.type), ylim=c(-2.5, 2.5), main="RLE")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=0.8)
+
+# differential expression
+X <- model.matrix(~0 + group2 + W)
+colnames(X) <- c(levels(group2), make.names(1:k))
+CM <- makeContrasts(
+  c1 = TRM - (1/5)*(gdT + MAIT + TEM + TEMRA + TEX),
+  c2 = TEX - (1/5)*(gdT + MAIT + TEM + TEMRA + TRM),
+  c3 = TRM - TEX,
+  levels=X)
+CM.bc <- CM
+
+Y <- estimateDisp(Y, X)
+fit <- glmFit(Y, X, prior.count=1/2)
+fit.bc <- fit
+
+LRT1 <- glmLRT(fit, contrast=CM[,1])
+LRT2 <- glmLRT(fit, contrast=CM[,2])
+LRT3 <- glmLRT(fit, contrast=CM[,3])
+
+# tt1 <- topTags(LRT1, n=Inf)
+# tt2 <- topTags(LRT2, n=Inf)
+# tt3 <- topTags(LRT3, n=Inf)
+# tab1 <- tt1$table
+# tab2 <- tt2$table
+# tab3 <- tt3$table
+# write.table(tab1, file="breast_trm-vs-all_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab2, file="breast_tex-vs-all_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab3, file="breast_trm-vs-tex_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
+# signatures
+dt1 <- decideTestsDGE(LRT1)
+dt2 <- decideTestsDGE(LRT2)
+D <- cbind(dt1, dt2)
+
+i1 <- D[,1]== 1 & ( D[,2]==0 | D[,2]==-1 )
+i2 <- D[,1]==-1 & ( D[,2]==0 | D[,2]== 1 )
+i3 <- D[,2]== 1 & ( D[,1]==0 | D[,1]==-1 )
+i4 <- D[,2]==-1 & ( D[,1]==0 | D[,1]== 1 )
+i5 <- D[,1]== 1 & D[,2]== 1
+i6 <- D[,1]==-1 & D[,2]==-1
+
+breast.trm.up    <- rownames(D[i1,])
+breast.trm.down  <- rownames(D[i2,])
+breast.tex.up    <- rownames(D[i3,])
+breast.tex.down  <- rownames(D[i4,])
+breast.both.up   <- rownames(D[i5,])
+breast.both.down <- rownames(D[i6,])
+
+# tab1 <- rbind(data.frame(Gene=breast.trm.up, Direction="up"), data.frame(Gene=breast.trm.down, Direction="down"))
+# tab2 <- rbind(data.frame(Gene=breast.tex.up, Direction="up"), data.frame(Gene=breast.tex.down, Direction="down"))
+# tab3 <- rbind(data.frame(Gene=breast.both.up, Direction="up"), data.frame(Gene=breast.both.down, Direction="down"))
+# write.table(tab1, file="breast_trm_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab2, file="breast_tex_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab3, file="breast_intersection_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
+```
+
+Breast: TRM/TEX "union" signature
+```{r, paged.print=F, fig.width=10, fig.height=5}
+# load data
+seu <- readRDS("breast.Rds")
+
+# processing and pseudo-bulking
+clusters <- as.character(seu$seurat_clusters)
+clusters[clusters=="0"] <-  "TRM_old1"
+clusters[clusters=="5"] <-  "TRM_old2"
+clusters[clusters=="7"] <-  "TRM_old3"
+clusters[clusters=="12"] <- "TRM_old4"
+clusters[clusters=="15"] <- "TRM_old5"
+clusters[clusters=="2"] <-  "TEM1"
+clusters[clusters=="3"] <-  "TEM2"
+clusters[clusters=="4"] <-  "TEM3"
+clusters[clusters=="9"] <-  "TEM4"
+clusters[clusters=="11"] <- "TEM5"
+clusters[clusters=="1"] <-  "TEMRA1"
+clusters[clusters=="6"] <-  "TEMRA2"
+clusters[clusters=="10"] <- "TEMRA3"
+clusters[clusters=="8"] <-  "gdT"
+clusters[clusters=="13"] <- "MAIT"
+clusters[clusters=="14"] <- "UK"
+cluster.names <- c(
+  "TRM_old1",
+  "TRM_old2",
+  "TRM_old3",
+  "TRM_old4",
+  "TRM_old5",
+  "TEM1",
+  "TEM2",
+  "TEM3",
+  "TEM4",
+  "TEM5",
+  "TEMRA1",
+  "TEMRA2",
+  "TEMRA3",
+  "gdT",
+  "MAIT",
+  "UK")
+
+donors <- seu$donor
+donor.names <- c("BC07","BC08","BC09","BC10","BC12","BCXX","BCYY","BCZZ")
+
+min.cells=20
+tab <- table(donors, clusters)
+tab <- tab[,cluster.names]
+
+Z.sc <- as.matrix(seu[["RNA"]]@counts)
+Z.pb <- matrix(0, nrow(Z.sc), ncol=sum(tab > min.cells))
+group1 <- c()
+group3 <- c()
+c <- 0
+for (j1 in 1:length(cluster.names)){
+  for (j2 in 1:length(donor.names)){
+    j <- which(clusters==cluster.names[j1] & donors==donor.names[j2])
+    if(length(j) > min.cells){
+      c <- c + 1
+      group1 <- c(group1, cluster.names[j1])
+      group3 <- c(group3, donor.names[j2])
+      Z.pb[,c] <- rowSums(Z.sc[,j])
+    }
+  }
+}
+
+group2 <- group1
+group2[group2=="TRM_old1"] <- "TRM_old"
+group2[group2=="TRM_old2"] <- "TRM_old"
+group2[group2=="TRM_old3"] <- "TRM_old"
+group2[group2=="TRM_old4"] <- "TRM_old"
+group2[group2=="TRM_old5"] <- "TRM_old"
+group2[group2=="TEM1"] <- "TEM"
+group2[group2=="TEM2"] <- "TEM"
+group2[group2=="TEM3"] <- "TEM"
+group2[group2=="TEM4"] <- "TEM"
+group2[group2=="TEM5"] <- "TEM"
+group2[group2=="TEMRA1"] <- "TEMRA"
+group2[group2=="TEMRA2"] <- "TEMRA"
+group2[group2=="TEMRA3"] <- "TEMRA"
+group2[group2=="gdT"] <- "gdT"
+group2[group2=="MAIT"] <- "MAIT"
+
+group1 <- factor(group1)
+group2 <- factor(group2)
+group3 <- factor(group3)
+
+Y <- DGEList(counts=Z.pb, genes=rownames(Z.sc))
+rownames(Y) <- rownames(Z.sc)
+
+# filter--low expression
+L <- list(
+  which(group2=="TRM_old"),
+  which(group2=="TEM"),
+  which(group2=="TEMRA"),
+  which(group2=="gdT"),
+  which(group2=="MAIT")
+  )
+Z <- Y$counts
+c <- 5
+s <- 2
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(data.frame(Z[,g]>c))>=s}
+keep <- rowSums(KEEP) >= 1
+Y <- Y[keep,,keep.lib.size=FALSE]
+
+# filter--gene type
+i1 <- grepl("HLA", Y$genes$genes)
+i2 <- grepl("TRB", Y$genes$genes)
+i3 <- grepl("TRA", Y$genes$genes)
+i4 <- grepl("TRG", Y$genes$genes)
+i5 <- grepl("TRD", Y$genes$genes)
+i6 <- grepl(".", fixed=TRUE, Y$genes$genes)
+i <- i1 | i2 | i3 | i4 | i5 | i6
+Y <- Y[!i,,keep.lib.size=FALSE]
+
+# normalisation
+D <- readRDS("hk-genes_hs.rds")
+gene.names <- D$gene_name.
+hk.status <- D$rnaseq.hk=="yes"
+hk.genes <- gene.names[hk.status]
+neg.ctl <- which(toupper(Y$genes$genes) %in% toupper(hk.genes))
+
+k1=20
+M <- replicate.matrix(group2)
+out <- .ruvIII(Y=log2(t(Y$counts) + 1/2), k=k1, M=M, ctl=neg.ctl, return.info=TRUE)
+W1 <- out$W
+# par(mfcol=c(1,2))
+# Yn1 <- t(out$newY)
+# RLE <- Yn1 - rowMedians(Yn1)
+# type <- group2 #length(unique(group2))
+# col.type <- type
+# levels(col.type) <- brewer.pal("Dark2", n=8)
+# plotPCA(Yn1, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(col.type), cex=2, main="PCA (RUV)")
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=0.8)
+# boxplot(RLE, outline=FALSE, names=NULL, col=as.character(col.type), ylim=c(-2.5, 2.5), main="RLE (RUV)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(col.type), bg="white", cex=0.8)
+
+# differential expression
+X <- model.matrix(~0 + group2 + W1)
+colnames(X) <- c(levels(group2), make.names(1:k1))
+CM <- makeContrasts(c = TRM_old - (1/4)*(gdT + MAIT + TEM + TEMRA), levels=X)
+
+Y <- estimateDisp(Y, X)
+fit <- glmFit(Y, X, prior.count=1/2)
+LRT <- glmLRT(fit, contrast=CM[,"c"])
+
+# tt <- topTags(LRT, n=Inf)
+# tab <- tt$table
+# write.table(tab, file="breast_trm-union-vs-all_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
+# signature
+D <- decideTestsDGE(LRT)
+i1 <- D[,1]== 0 & D[,2]== 1
+i2 <- D[,1]== 0 & D[,2]==-1
+breast.trm.union.up    <- rownames(D[i1,])
+breast.trm.union.down  <- rownames(D[i2,])
+
+# tab <- rbind(data.frame(Gene=breast.trm.union.up, Direction="up"),
+#              data.frame(Gene=breast.trm.union.down, Direction="down"))
+# write.table(tab, file="breast_trm-union-vs-all_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
+```
+
+Liver: TRM, TEX, and intersection signatures (Figure 2I and 2J)
+```{r, paged.print=F, fig.width=10, fig.height=5}
+# load data
+seu <- readRDS("liver.Rds")
+
+# processing and pseudo-bulking
+clusters <- as.character(seu$seurat_clusters)
+clusters[clusters=="0"]  <- "TCM"
+clusters[clusters=="1"]  <- "TRM2.neg"
+clusters[clusters=="2"]  <- "TEM2"
+clusters[clusters=="3"]  <- "TEMRA1"
+clusters[clusters=="4"]  <- "TEMRA2"
+clusters[clusters=="5"]  <- "gdT"
+clusters[clusters=="6"]  <- "TEM3"
+clusters[clusters=="7"]  <- "TRM3.neg"
+clusters[clusters=="8"]  <- "TEM1"
+clusters[clusters=="9"]  <- "TEX"
+clusters[clusters=="10"] <- "TRM1.pos"
+clusters[clusters=="11"] <- "TEM4"
+clusters[clusters=="12"] <- "Tpex"
+cluster.names <- c(
+  "TRM1.pos",
+  "TRM2.neg",
+  "TRM3.neg",
+  "TEX",
+  "TCM",
+  "TEM1",
+  "TEM2",
+  "TEM3",
+  "TEM4",
+  "TEMRA1",
+  "TEMRA2",
+  "gdT",
+  "Tpex")
+
+donors <- seu$Donor
+donor.names <- c("HC01","HC04","HC05","HC06 or HC08 (1)","HC06 or HC08 (2)","HC07")
+
+min.cells=20
+tab <- table(donors, clusters)
+tab <- tab[,cluster.names]
+
+Z.sc <- as.matrix(seu[["RNA"]]@counts)
+Z.pb <- matrix(0, nrow(Z.sc), ncol=sum(tab > min.cells))
+group1 <- c()
+group3 <- c()
+c <- 0
+for (j1 in 1:length(cluster.names)){
+  for (j2 in 1:length(donor.names)){
+    j <- which(clusters==cluster.names[j1] & donors==donor.names[j2])
+    if(length(j) > min.cells){
+      c <- c + 1
+      group1 <- c(group1, cluster.names[j1])
+      group3 <- c(group3, donor.names[j2])
+      Z.pb[,c] <- rowSums(Z.sc[,j])
+    }
+  }
+}
+
+group2 <- group1
+group2[group2=="TRM1.pos"] <- "TRM.pos"
+group2[group2=="TRM2.neg"] <- "TRM.neg"
+group2[group2=="TRM3.neg"] <- "TRM.neg"
+group2[group2=="TEX"] <- "TEX"
+group2[group2=="TCM"] <- "TCM"
+group2[group2=="TEM1"] <- "TEM"
+group2[group2=="TEM2"] <- "TEM"
+group2[group2=="TEM3"] <- "TEM"
+group2[group2=="TEM4"] <- "TEM"
+group2[group2=="TEMRA1"] <- "TEMRA"
+group2[group2=="TEMRA2"] <- "TEMRA"
+group2[group2=="gdT"] <- "gdT"
+group2[group2=="Tpex"] <- "Tpex"
+
+group1 <- factor(group1)
+group2 <- factor(group2)
+group3 <- factor(group3)
+
+Y <- DGEList(counts=Z.pb, genes=rownames(Z.sc))
+rownames(Y) <- rownames(Z.sc)
+
+# filter--low expression
+L <- list(
+  which(group2=="gdT"),
+  which(group2=="TCM"),
+  which(group2=="TEM"),
+  which(group2=="TEMRA"),
+  which(group2=="TEX"),
+  which(group2=="TRM.neg"),
+  which(group2=="TRM.pos")
+  )
+Z <- Y$counts
+c <- 3
+s <- 4
+KEEP <- matrix(0,nrow(Z),length(L))
+for(i in 1:length(L)){g <- L[[i]]; KEEP[,i] <- rowSums(data.frame(Z[,g]>c))>=s}
+keep <- rowSums(KEEP) >= 1
+Y <- Y[keep,,keep.lib.size=FALSE]
+
+# filter--gene type
+i1 <- grepl("HLA", Y$genes$genes)
+i2 <- grepl("TRB", Y$genes$genes)
+i3 <- grepl("TRA", Y$genes$genes)
+i4 <- grepl("TRG", Y$genes$genes)
+i5 <- grepl("TRD", Y$genes$genes)
+i6 <- grepl(".", fixed=TRUE, Y$genes$genes)
+i <- i1 | i2 | i3 | i4 | i5 | i6
+Y <- Y[!i,,keep.lib.size=FALSE]
+
+# normalisation
+D <- readRDS("hk-genes_hs.rds")
+gene.names <- D$gene_name.
+hk.status <- D$rnaseq.hk=="yes"
+hk.genes <- gene.names[hk.status]
+neg.ctl <- which(toupper(Y$genes$genes) %in% toupper(hk.genes))
+
+k1=15
+y <- log2(Y$counts + 1)
+M <- replicate.matrix(group2)
+out <- .ruvIII(Y=t(y), k=k1, M=M, ctl=neg.ctl, return.info=TRUE)
+W1 <- out$W
+# par(mfcol=c(1,2))
+# Yn1 <- t(out$newY)
+# RLE <- Yn1 - rowMedians(Yn1)
+# type <- factor(group2)
+# cols.type <- type
+# levels(cols.type) <- brewer.pal("Dark2", n=8)
+# plotPCA(Yn1, isLog=TRUE, labels=FALSE, pch=21, col="grey40", bg=as.character(cols.type), cex=2, main="PCA (RUV)")
+# boxplot(RLE, col=as.character(cols.type), outline=FALSE, names=NULL, ylim=c(-1.5, 1.5), main="RLE (RUV)")
+# abline(h=0, col="grey20", lwd=3, lty=1)
+# legend("bottomright", legend=levels(type), fill=levels(cols.type), bg="white")
+
+# differential expression
+X <- model.matrix(~0 + group2 + W1)
+colnames(X) <- c(levels(group2), make.names(1:k1))
+CM <- makeContrasts(
+  c1 = TRM.pos - (1/4)*(TCM + TEM + TEMRA + TEX),
+  c2 = TEX - (1/4)*(TCM + TEM + TEMRA + TRM.pos),
+  c3 = TRM.pos - TEX,
+  levels=X)
+CM.liv <- CM
+
+Y <- estimateDisp(Y, X)
+fit <- glmFit(Y, X, prior.count=1)
+fit.liv <- fit
+
+LRT1 <- glmLRT(fit, contrast=CM[,1])
+LRT2 <- glmLRT(fit, contrast=CM[,2])
+LRT3 <- glmLRT(fit, contrast=CM[,3])
+
+# tt1 <- topTags(LRT1, n=Inf)
+# tt2 <- topTags(LRT2, n=Inf)
+# tt3 <- topTags(LRT3, n=Inf)
+# tab1 <- tt1$table
+# tab2 <- tt2$table
+# tab3 <- tt3$table
+# write.table(tab1, file="liver_trm-vs-all_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab2, file="liver_tex-vs-all_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab3, file="liver_trm-vs-tex_de.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
+# signatures
+dt1 <- decideTestsDGE(LRT1)
+dt2 <- decideTestsDGE(LRT2)
+D <- cbind(dt1,dt2)
+
+i1 <- D[,1]== 1 & ( D[,2]==0 | D[,2]==-1 )
+i2 <- D[,1]==-1 & ( D[,2]==0 | D[,2]== 1 )
+i3 <- D[,2]== 1 & ( D[,1]==0 | D[,1]==-1 )
+i4 <- D[,2]==-1 & ( D[,1]==0 | D[,1]== 1 )
+i5 <- D[,1]== 1 & D[,2]== 1
+i6 <- D[,1]==-1 & D[,2]==-1
+
+liver.trm.up    <- rownames(D[i1,])
+liver.trm.down  <- rownames(D[i2,])
+liver.tex.up    <- rownames(D[i3,])
+liver.tex.down  <- rownames(D[i4,])
+liver.both.up   <- rownames(D[i5,])
+liver.both.down <- rownames(D[i6,])
+
+# tab1 <- rbind(data.frame(Gene=liver.trm.up, Direction="up"), data.frame(Gene=liver.trm.down, Direction="down"))
+# tab2 <- rbind(data.frame(Gene=liver.tex.up, Direction="up"), data.frame(Gene=liver.tex.down, Direction="down"))
+# tab3 <- rbind(data.frame(Gene=liver.both.up, Direction="up"), data.frame(Gene=liver.both.down, Direction="down"))
+# write.table(tab1, file="liver_trm-vs-all_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab2, file="liver_tex-vs-all_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+# write.table(tab3, file="liver_intersection_sig.txt", quote=FALSE, sep="\t", row.names=FALSE)
+
+```
+
+Breast: TRM and TEX signatures, "refined" based on liver signatures
+```{r, paged.print=F}
+# TRM
+LRT1 <- glmLRT(fit.bc, contrast=CM.bc[,"c1"])
+LRT2 <- glmLRT(fit.liv, contrast=CM.liv[,"c1"])
+
+i <- intersect(rownames(LRT1), rownames(LRT2))
+tt1 <- topTags(LRT1[i,], n=Inf)
+tt2 <- topTags(LRT2[i,], n=Inf)
+tab1 <- tt1$table
+tab2 <- tt2$table
+i <- intersect(rownames(tab1), rownames(tab2))
+breast <- tab1[i,]
+liver <- tab2[i,]
+
+FDR=0.05
+logFC=0.5
+i1 <- breast$FDR < FDR & breast$logFC > 0 & liver$FDR < FDR & liver$logFC > 0
+i2 <- breast$FDR < FDR & breast$logFC > 0 & liver$logFC > 0.5
+i3 <- liver$FDR  < FDR & liver$logFC  > 0 & breast$logFC > 0.5
+i <- i1 | i2 | i3
+tab1 <- data.frame(Gene=breast[i,]$genes, Direction="UP")
+i1 <- breast$FDR < FDR & breast$logFC < 0 & liver$FDR < FDR & liver$logFC < 0
+i2 <- breast$FDR < FDR & breast$logFC < 0 & liver$logFC < -0.5
+i3 <- liver$FDR  < FDR & liver$logFC  < 0 & breast$logFC < -0.5
+i <- i1 | i2 | i3
+tab2 <- data.frame(Gene=breast[i,]$genes, Direction="Down")
+tab <- rbind(tab1, tab2)
+# write.table(tab, "breast_trm_refined-sig.txt", quote=FALSE, sep="\t")
+
+# TEX
+LRT1 <- glmLRT(fit1.bc, contrast=CM.bc[,"c2"])
+LRT2 <- glmLRT(fit1.liv, contrast=CM.liv[,"c2"])
+
+i <- intersect(rownames(LRT1), rownames(LRT2))
+tt1 <- topTags(LRT1[i,], n=Inf)
+tt2 <- topTags(LRT2[i,], n=Inf)
+tab1 <- tt1$table
+tab2 <- tt2$table
+i <- intersect(rownames(tab1), rownames(tab2))
+breast <- tab1[i,]
+liver <- tab2[i,]
+
+FDR=0.05
+logFC=0.5
+i1 <- breast$FDR < FDR & breast$logFC > 0 & liver$FDR < FDR & liver$logFC > 0
+i2 <- breast$FDR < FDR & breast$logFC > 0 & liver$logFC > 0.5
+i3 <- liver$FDR  < FDR & liver$logFC  > 0 & breast$logFC > 0.5
+i <- i1 | i2 | i3
+tab1 <- data.frame(Gene=breast[i,]$genes, Direction="UP")
+i1 <- breast$FDR < FDR & breast$logFC < 0 & liver$FDR < FDR & liver$logFC < 0
+i2 <- breast$FDR < FDR & breast$logFC < 0 & liver$logFC < -0.5
+i3 <- liver$FDR  < FDR & liver$logFC  < 0 & breast$logFC < -0.5
+i <- i1 | i2 | i3
+tab2 <- data.frame(Gene=breast[i,]$genes, Direction="Down")
+tab <- rbind(tab1, tab2)
+# write.table(tab, "breast_tex_refined-sig.txt", quote=FALSE, sep="\t")
+
+```
