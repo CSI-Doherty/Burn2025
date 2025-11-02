@@ -1,32 +1,11 @@
-# Burn2024
+# Burn2025
 
-## Figures to be placed in here:
+## Code for Analysis and Figures  
 
-Figure 1:
-- Justine: 1b, 1c, d - DONE
-- Jan: 1e, 1f - DONE
-	 1j, 1k, 1l, 1m - ShinyCell
-	1n - DONE 
-	1o - Tom
+- Main preprocessing and QC can be found in Breast_SC_Preprocessing.Rmd, Breast_SC_Merging.Rmd, and Liver_SC_Preprocessing.Rmd.
 
-Figure 2:
-- nil
+- CD8+ cells analysis in Breast_CD8_analysis.Rmd and Liver_CD8_Analysis.Rmd.
 
-Figure 3:
-- Luke: 3b
-- Jan 3c - DONE
-- Tony: 3e, 3f, 3g
-- 3h, 3i?
+- Pseudo bulk analysis in Gene_expression_signatures.Rmd.
 
-Figure 4:
-- Dan: 4b, 4c, 4d
-- Tony: 4a, 4e, 4g, 4h
-- 4f?
-
-Figure 5:
-- 4p, 4q, 4r - DONE
-
-Figure 6:
-- bulk - Luke
-
-Extended?
+- Code for individial plots in Figure[1-5].
